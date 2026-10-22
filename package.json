@@ -1,0 +1,29 @@
+{
+  "name": "nas-xunlei-helper",
+  "description": "将浏览器中的下载链接一键发送到 NAS 迅雷远程下载。",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "compile": "vue-tsc --noEmit",
+    "check": "pnpm compile && pnpm build",
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:cent": "node scripts/deploy.mjs --browser=cent",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "ant-design-vue": "4.x",
+    "vue": "^3.5.39"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.2.1",
+    "@wxt-dev/module-vue": "^1.0.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.2",
+    "vue-tsc": "^3.3.6",
+    "wxt": "^0.21.4"
+  }
+}

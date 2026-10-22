@@ -1,0 +1,12 @@
+node_modules
+.output
+.wxt
+.env*
+!.env.example
+*.log
+.DS_Store
+.debug-profile
+.debug-profile-cent
+.debug-profile-edge
+chrome
+.zcode
