@@ -123,12 +123,15 @@ export async function resetSettings(): Promise<XunleiSettings> {
 
 /**
  * 监听其它上下文（options / popup / background）的设置变更：
- * 重新加载内存值后触发回调。返回解绑函数。
+ * 采用变更后的值更新内存值并触发回调。返回解绑函数。
  */
 export function watchSettingsStorage(onChange: (settings: XunleiSettings) => void): () => void {
   const listener = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
     if (area === 'local' && changes[SETTINGS_STORAGE_KEY]) {
-      void ensureSettingsLoaded().then(onChange);
+      // 直接采用变更后的值，避免 ensureSettingsLoaded() 命中本上下文旧缓存
+      current = normalizeSettings(changes[SETTINGS_STORAGE_KEY].newValue);
+      loadPromise = Promise.resolve(current);
+      onChange(current);
     }
   };
   try {

@@ -7,7 +7,7 @@
 - Manifest V3 浏览器扩展：把下载链接发送到 NAS 迅雷（群晖套件版 `pan-xunlei-com`），**没有 NAS 端组件，也没有后端服务**。
 - 技术栈：WXT 0.21 + Vue 3 + TypeScript + Ant Design Vue 4 + pnpm。
 - Node.js **>= 22**（WXT 0.21 要求，部署脚本也依赖全局 `fetch` / `WebSocket`），必须使用 pnpm（仓库有 `pnpm-lock.yaml`，勿改用 npm/yarn）。
-- 发送原理：复用浏览器已登录的迅雷 Web 会话，用 `chrome.scripting.executeScript` 注入脚本，按 DOM 选择器模拟「新建任务 → 填链接 → 解析 → 立即下载」。不调用 NAS HTTP API，不存储账号密码。
+- 发送原理：复用浏览器已登录的迅雷 Web 会话，用 `chrome.scripting.executeScript` 注入脚本，按 DOM 选择器模拟「新建任务 → 填链接 → 解析 → 立即下载」。保存路径通过读取页面 Vuex 并调用面板自身的目录 action 预选；不自行拼接建任务 HTTP 请求，不存储账号密码。
 - 当前为原型重写版。`manifest.version` 在 `wxt.config.ts` 中硬编码（现为 `0.1.0`），与 `package.json` 的 `version` 需保持同步。
 
 ## 常用命令
@@ -89,7 +89,7 @@
 | --- | --- |
 | `entrypoints/background.ts` | 右键菜单注册、popup 消息处理、设置校验、查找/打开迅雷标签页、调用发送流程、桌面通知 |
 | `utils/settings.ts` | 设置的默认值、校验、`chrome.storage.local` 单 key 读写、跨上下文监听 |
-| `utils/xunleiAutomation.ts` | 迅雷页面选择器、步骤注入、解析/立即下载、默认路径 best-effort 检测 |
+| `utils/xunleiAutomation.ts` | 迅雷页面选择器、步骤注入、解析/立即下载、保存路径解析与 Vuex 预选 |
 | `entrypoints/options/` | 控制面板（Ant Design Vue 表单，独立标签页） |
 | `entrypoints/popup/` | 工具栏弹窗：多行链接批量发送、打开设置/迅雷页 |
 | `scripts/deploy.mjs` | 本地构建与调试浏览器部署 |
@@ -100,23 +100,25 @@
 
 1. `create-task`：点击 `.create__task`
 2. `fill-links`：写入 `.el-textarea__inner` 并点击 `.task-parse-btn`
-3. `confirm` 模式：`wait-dialog` 等待 `.result-nas-task-dialog` 与「立即下载」按钮出现后停止
-4. `immediate` 模式：`confirm-download` 做同样的等待后点击「立即下载」按钮
+3. `confirm-download` / `wait-dialog`：等待 `.result-nas-task-dialog` 与其中的「立即下载」按钮就绪；
+   读取页面主世界的 Vuex，按配置路径解析目录并预选保存位置
+4. `immediate` 模式随后点击「立即下载」；`confirm` 模式停在此处，由用户手动确认
 
 每步单独注入，超时为 10 秒（`STEP_TIMEOUT_MS`）。
 
 ## 关键实现约束
 
 - **注入函数必须自包含**：`injectedRunStep` 会被序列化进页面执行，不能引用模块顶层变量，只能使用参数和自身内部定义。修改时尤其注意。
-- **选择器集中管理**：所有迅雷 DOM 选择器放在 `XUNLEI_SELECTORS`（`utils/xunleiAutomation.ts`）。页面结构变化时只改这里，不要散落到别处。
-- **默认路径只做只读检测**：`detectPath()` 不点击任何未知 DOM；没有稳定选择器前不要加自动选择目录的逻辑，失败时回退 NAS 默认目录并如实提示。
+- **MAIN world 边界**：`confirm-download` / `wait-dialog` 需要读取页面主世界的 Vuex（`__vue_app__`），必须以 `world: 'MAIN'` 注入；其余步骤只操作 DOM，保持 `ISOLATED`。
+- **选择器集中管理**：所有迅雷 DOM 选择器放在 `XUNLEI_SELECTORS`（`utils/xunleiAutomation.ts`）。页面结构变化时只改这里，不要散落到别处。结果对话框与「添加链接」对话框都有 `.task-parse-btn`，查找按钮时必须限定在结果对话框内。
+- **保存路径预选**：`applyDownloadPath()` 通过 Vuex 的 `drive.treeNodeId/treeNodePath` 预选目录，路径解析复用面板自身 action `drive/getFolderList`、`drive/loadFolders`，只对已存在且可写目录生效；找不到目录时清空选择并回退迅雷当前目录，通知必须如实说明原因。不要自动创建目录，也不要自行拼接建任务请求。
 - **设置读取顺序**：`getSettings()` 是同步内存读取；使用前先 `await ensureSettingsLoaded()`。保存用 `saveSettings()`，其它上下文通过 `watchSettingsStorage()` 感知变更。存储 key 为 `nas_xunlei_settings`，位于 `storage.local`（不要改成 sync）。
 - **右键菜单注册时机**：只在 `onInstalled` 中 `removeAll` 后重建；Service Worker 冷启动不会再触发 `onInstalled`，菜单本身由浏览器持久化，不要每次启动重复创建。
 - **WXT 约定**：`defineBackground` 等 API 由 WXT 自动导入，不要手动 import；`@/` 指向项目根目录（如 `@/utils/settings`）。
 - **manifest 权限**：当前为 `storage, contextMenus, tabs, scripting, notifications`；`host_permissions` 放行全部 http/https 是因为 NAS 地址由用户动态配置。新增权限需同步更新 README 并说明用途。
 - **UI 约定**：界面与通知文案使用中文；Vue SFC 使用 `<script setup lang="ts">` 与 scoped 样式；组件使用 Ant Design Vue。
 - **不要提交生成物**：`node_modules`、`.output`、`.wxt`、`.debug-profile*`、`chrome/`、`.zcode/` 与 `.env*` 均被忽略；不要为了让某个改动提交而修改 `.gitignore` 放行这些目录。
-- **不要绕过产品路线**：发送链路是 DOM 自动化，未经明确要求不要改成直接调用 NAS HTTP 接口，也不要引入账号密码存储。
+- **不要绕过产品路线**：发送链路仍是 DOM 自动化 + 面板自身的建任务流程；路径预选复用面板 Vuex/action，不自行拼接建任务 HTTP 请求，也不要引入账号密码存储。
 
 ## 验证要求
 

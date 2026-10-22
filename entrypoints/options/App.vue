@@ -106,8 +106,8 @@ const handleReset = () => {
             <a-input v-model:value="form.downloadPath" placeholder="/downloads/movies" allow-clear />
             <template #extra>
               <span class="extra">
-                NAS 上的保存路径，留空则使用 NAS 当前默认目录。「立即下载」模式下会尽力匹配该路径；
-                「确认后下载」模式下始终可在迅雷对话框中手动修改。
+                填写迅雷面板中显示的路径（如 /downloads/movies），不是 NAS 宿主机路径；留空则使用迅雷当前默认目录。
+                发送时会自动在迅雷下载对话框中预选该目录，目录需已在迅雷中创建。
               </span>
             </template>
           </a-form-item>
@@ -126,7 +126,7 @@ const handleReset = () => {
                   发送后自动解析链接并点击「立即下载」，全程无需在迅雷页面操作。
                 </template>
                 <template v-else>
-                  发送后自动解析链接并停留在迅雷下载确认框，由你编辑文件名、保存位置后再手动点击「立即下载」。
+                  发送后自动解析链接并停留在迅雷下载确认框，已预选保存位置，可编辑文件名或保存位置后再手动点击「立即下载」。
                 </template>
               </span>
             </template>

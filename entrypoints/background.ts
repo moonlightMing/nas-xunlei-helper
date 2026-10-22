@@ -2,6 +2,7 @@ import {
   ensureSettingsLoaded,
   getSettings,
   validateXunleiUrl,
+  watchSettingsStorage,
   type XunleiSettings,
 } from '@/utils/settings';
 import { runSendFlow, type SendOutcome } from '@/utils/xunleiAutomation';
@@ -17,6 +18,9 @@ export interface SendLinksMessage {
 export type SendLinksResponse = SendOutcome | { ok: false; message: string };
 
 export default defineBackground(() => {
+  // Service Worker 常驻期间也要感知设置页的修改，避免发送时沿用旧路径
+  watchSettingsStorage(() => {});
+
   chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.removeAll(() => {
       chrome.contextMenus.create({
