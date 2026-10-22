@@ -24,13 +24,38 @@ export interface XunleiSettings {
   downloadPath: string;
   /** 下载模式 */
   downloadMode: DownloadMode;
+  /** 复用迅雷页发送前是否刷新（关闭可减少对当前页面的打断） */
+  reloadBeforeSend: boolean;
+  /** 发送成功后是否弹桌面通知 */
+  notifyOnSendSuccess: boolean;
+  /** 发送失败后是否弹桌面通知 */
+  notifyOnSendFailure: boolean;
+  /** 保存路径未能应用时是否弹桌面通知 */
+  notifyOnPathFallback: boolean;
+  /** 是否在发送后监控下载任务状态 */
+  monitorDownloads: boolean;
+  /** 下载任务失败时是否弹桌面通知 */
+  notifyOnDownloadFailure: boolean;
+  /** 下载任务完成时是否弹桌面通知 */
+  notifyOnDownloadComplete: boolean;
 }
 
 export const DEFAULT_SETTINGS: XunleiSettings = {
   xunleiUrl: '',
   downloadPath: '',
   downloadMode: 'immediate',
+  reloadBeforeSend: true,
+  notifyOnSendSuccess: false,
+  notifyOnSendFailure: true,
+  notifyOnPathFallback: true,
+  monitorDownloads: true,
+  notifyOnDownloadFailure: true,
+  notifyOnDownloadComplete: false,
 };
+
+function booleanOrDefault(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
 
 /** 校验 NAS 迅雷地址，返回错误信息；合法返回 null */
 export function validateXunleiUrl(url: string): string | null {
@@ -62,6 +87,28 @@ function normalizeSettings(raw: unknown): XunleiSettings {
     downloadPath:
       typeof input.downloadPath === 'string' ? input.downloadPath.trim() : DEFAULT_SETTINGS.downloadPath,
     downloadMode: input.downloadMode === 'confirm' ? 'confirm' : 'immediate',
+    reloadBeforeSend: booleanOrDefault(input.reloadBeforeSend, DEFAULT_SETTINGS.reloadBeforeSend),
+    notifyOnSendSuccess: booleanOrDefault(
+      input.notifyOnSendSuccess,
+      DEFAULT_SETTINGS.notifyOnSendSuccess,
+    ),
+    notifyOnSendFailure: booleanOrDefault(
+      input.notifyOnSendFailure,
+      DEFAULT_SETTINGS.notifyOnSendFailure,
+    ),
+    notifyOnPathFallback: booleanOrDefault(
+      input.notifyOnPathFallback,
+      DEFAULT_SETTINGS.notifyOnPathFallback,
+    ),
+    monitorDownloads: booleanOrDefault(input.monitorDownloads, DEFAULT_SETTINGS.monitorDownloads),
+    notifyOnDownloadFailure: booleanOrDefault(
+      input.notifyOnDownloadFailure,
+      DEFAULT_SETTINGS.notifyOnDownloadFailure,
+    ),
+    notifyOnDownloadComplete: booleanOrDefault(
+      input.notifyOnDownloadComplete,
+      DEFAULT_SETTINGS.notifyOnDownloadComplete,
+    ),
   };
 }
 

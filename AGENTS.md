@@ -7,8 +7,9 @@
 - Manifest V3 浏览器扩展：把下载链接发送到 NAS 迅雷（群晖套件版 `pan-xunlei-com`），**没有 NAS 端组件，也没有后端服务**。
 - 技术栈：WXT 0.21 + Vue 3 + TypeScript + Ant Design Vue 4 + pnpm。
 - Node.js **>= 22**（WXT 0.21 要求，部署脚本也依赖全局 `fetch` / `WebSocket`），必须使用 pnpm（仓库有 `pnpm-lock.yaml`，勿改用 npm/yarn）。
-- 发送原理：复用浏览器已登录的迅雷 Web 会话，用 `chrome.scripting.executeScript` 注入脚本，按 DOM 选择器模拟「新建任务 → 填链接 → 解析 → 立即下载」。保存路径通过读取页面 Vuex 并调用面板自身的目录 action 预选；不自行拼接建任务 HTTP 请求，不存储账号密码。
-- 当前为原型重写版。`manifest.version` 在 `wxt.config.ts` 中硬编码（现为 `0.1.0`），与 `package.json` 的 `version` 需保持同步。
+- 发送原理：复用浏览器已登录的迅雷 Web 会话，用 `chrome.scripting.executeScript` 注入脚本，按 DOM 选择器模拟「新建任务 → 填链接 → 解析 → 立即下载」。保存路径通过读取页面 Vuex 并调用面板自身的目录 action 预选；发送前有页面探针与错误分类，发送后可选择监控下载任务状态。任务监控只读复用页面 Vuex 与面板自身的 `drive/getTask`，不自行拼接建任务请求，不存储账号密码。
+- 通知体系使用固定通知 ID 与 `storage.session` 保存的按钮动作，区分发送失败、路径回退、任务失败与任务完成；发送成功通知和任务完成通知默认关闭，发送失败与任务失败默认开启。
+- 当前为原型重写版。`manifest.version` 在 `wxt.config.ts` 中硬编码（现为 `0.2.0`），与 `package.json` 的 `version` 需保持同步。
 
 ## 常用命令
 
@@ -87,44 +88,76 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `entrypoints/background.ts` | 右键菜单注册、popup 消息处理、设置校验、查找/打开迅雷标签页、调用发送流程、桌面通知 |
-| `utils/settings.ts` | 设置的默认值、校验、`chrome.storage.local` 单 key 读写、跨上下文监听 |
-| `utils/xunleiAutomation.ts` | 迅雷页面选择器、步骤注入、解析/立即下载、保存路径解析与 Vuex 预选 |
-| `entrypoints/options/` | 控制面板（Ant Design Vue 表单，独立标签页） |
-| `entrypoints/popup/` | 工具栏弹窗：多行链接批量发送、打开设置/迅雷页 |
+| `entrypoints/background.ts` | 右键菜单、消息路由、发送编排、并发锁、预检、通知动作、任务监控 alarm |
+| `utils/settings.ts` | 设置默认值、校验、`chrome.storage.local` 单 key 读写、跨上下文监听；含通知/监控/刷新开关 |
+| `utils/links.ts` | 链接提取、去重、协议校验（http(s)/magnet/thunder/ed2k） |
+| `utils/sendErrors.ts` | 错误码、用户提示、通知主动作、重试资格、注入异常分类 |
+| `utils/messaging.ts` | popup/options/background 共享的消息与响应类型 |
+| `utils/xunleiTab.ts` | 迅雷标签页查找、打开/复用、聚焦、加载等待（5 秒轮询保活） |
+| `utils/xunleiAutomation.ts` | 迅雷页面选择器、步骤注入、错误/登录识别、路径解析、目录列表、任务读取 |
+| `utils/history.ts` | 发送记录、监控摘要回写、中断标记、清空与监听 |
+| `utils/notifications.ts` | 固定通知 ID、按钮动作、发送/任务通知策略 |
+| `utils/taskMonitor.ts` | 任务监控 session、1 分钟 alarm、状态比对、合并通知 |
+| `entrypoints/options/` | 控制面板：设置、测试连接、目录树、发送记录、引导 |
+| `entrypoints/popup/` | 工具栏弹窗：链接解析/去重、短错误动作、打开设置/迅雷 |
 | `scripts/deploy.mjs` | 本地构建与调试浏览器部署 |
-| `wxt.config.ts` | manifest：权限、host 权限、options 页、图标、版本 |
-| `public/icons/` | 16/48 像素扩展图标 |
+| `wxt.config.ts` | manifest：权限（含 `alarms`）、host 权限、options 页、图标、版本 |
+| `public/icons/` | 16/48/128 像素扩展图标 |
 
-发送链路：`popup` 或右键菜单 → `background.sendLinksToNas()` → `ensureSettingsLoaded()` 与地址校验 → `openXunleiTab()`（复用标签页时激活、reload、等待加载完成）→ `runSendFlow()` 逐步注入：
+发送链路：`popup` 或右键菜单 → `background.sendLinksToNas()`（模块级 `activeSend` 并发锁）→ 解析/校验链接与设置 → 写 running 历史 → `openXunleiTab()`（复用标签页时激活、必要时 reload、等待加载）→ `inspectXunleiPage()` / `classifyProbe()` 预检 → `readTaskState()` 记录任务 id 基线 → `runSendFlow()` 逐步注入：
 
 1. `create-task`：点击 `.create__task`
-2. `fill-links`：写入 `.el-textarea__inner` 并点击 `.task-parse-btn`
+2. `fill-links`：写入 `.el-textarea__inner` 并点击 `.task-parse-btn`；点击后短查错误 toast
 3. `confirm-download` / `wait-dialog`：等待 `.result-nas-task-dialog` 与其中的「立即下载」按钮就绪；
-   读取页面主世界的 Vuex，按配置路径解析目录并预选保存位置
-4. `immediate` 模式随后点击「立即下载」；`confirm` 模式停在此处，由用户手动确认
+   读取页面主世界的 Vuex，按配置路径解析目录并预选保存位置；等待期间同时检测登录失效/解析失败
+4. `immediate` 模式随后点击「立即下载」并读取当前任务 id；`confirm` 模式停在此处，由用户手动确认
 
-每步单独注入，超时为 10 秒（`STEP_TIMEOUT_MS`）。
+最后更新历史 → 发送通知 → 按需 `startMonitor()`。每步单独注入，超时为 10 秒（`STEP_TIMEOUT_MS`）。
+
+### 错误码与通知
+
+错误码定义在 `utils/sendErrors.ts`：`no-links`、`settings-missing`、`settings-invalid`、`tab-open-failed`、`tab-load-timeout`、`tab-closed`、`nas-unreachable`、`login-required`、`page-mismatch`、`panel-not-ready`、`dialog-open`、`parse-failed`、`parse-timeout`、`download-click-failed`、`injection-failed`、`busy`、`unknown`。每个错误码带提示、主动作（打开设置/打开迅雷）、是否可重试、是否通知。
+
+固定通知 ID：`nas-xunlei-send-result`、`nas-xunlei-task-failure`、`nas-xunlei-task-complete`、`nas-xunlei-info`。发送失败/路径回退/任务失败使用 `requireInteraction`；发送成功/任务完成不常驻。通知按钮最多两个，动作映射写入 `storage.session` 的 `nas_xunlei_notification_actions`，Service Worker 重启后仍可用。
+
+### 存储键
+
+- `nas_xunlei_settings`：设置，`storage.local`
+- `nas_xunlei_history`：发送记录，`storage.local`，上限 50
+- `nas_xunlei_monitor`：活跃监控 session，`storage.local`，上限 5 个 session、每个最多 200 个任务
+- `nas_xunlei_last_send`：最近发送的链接，`storage.session`，30 分钟过期，用于通知重试
+- `nas_xunlei_notification_actions`：通知按钮动作，`storage.session`
+
+### 任务监控
+
+发送前读取 `drive.all/tasks/tasksDone` 得到任务 id 基线；立即下载时 `confirm-download` 还会返回点击后的当前任务 id，background 用「当前 id - 基线」得到候选。`utils/taskMonitor.ts` 用 1 分钟 alarm 扫描：发现期（立即下载 2 分钟、确认后下载 30 分钟）把新任务纳入，跟踪期对非终态任务复用 `drive/getTask`（每次最多 3 个），读取 `PHASE_TYPE_*` 状态。`PHASE_TYPE_ERROR` 记失败、`PHASE_TYPE_COMPLETE` 记完成，`PAUSED` 不通知。每轮扫描最多一条失败和一条完成通知，名称最多列 3 个；同一任务按 id 去重。全部终态、无任务、页面关闭、连续读取失败、用户关闭监控或 24 小时硬超时后停止，并把摘要/原因写回发送记录。页面关闭不自动重开。
 
 ## 关键实现约束
 
-- **注入函数必须自包含**：`injectedRunStep` 会被序列化进页面执行，不能引用模块顶层变量，只能使用参数和自身内部定义。修改时尤其注意。
-- **MAIN world 边界**：`confirm-download` / `wait-dialog` 需要读取页面主世界的 Vuex（`__vue_app__`），必须以 `world: 'MAIN'` 注入；其余步骤只操作 DOM，保持 `ISOLATED`。
-- **选择器集中管理**：所有迅雷 DOM 选择器放在 `XUNLEI_SELECTORS`（`utils/xunleiAutomation.ts`）。页面结构变化时只改这里，不要散落到别处。结果对话框与「添加链接」对话框都有 `.task-parse-btn`，查找按钮时必须限定在结果对话框内。
-- **保存路径预选**：`applyDownloadPath()` 通过 Vuex 的 `drive.treeNodeId/treeNodePath` 预选目录，路径解析复用面板自身 action `drive/getFolderList`、`drive/loadFolders`，只对已存在且可写目录生效；找不到目录时清空选择并回退迅雷当前目录，通知必须如实说明原因。不要自动创建目录，也不要自行拼接建任务请求。
-- **设置读取顺序**：`getSettings()` 是同步内存读取；使用前先 `await ensureSettingsLoaded()`。保存用 `saveSettings()`，其它上下文通过 `watchSettingsStorage()` 感知变更。存储 key 为 `nas_xunlei_settings`，位于 `storage.local`（不要改成 sync）。
-- **右键菜单注册时机**：只在 `onInstalled` 中 `removeAll` 后重建；Service Worker 冷启动不会再触发 `onInstalled`，菜单本身由浏览器持久化，不要每次启动重复创建。
+- **注入函数必须自包含**：`injectedRunStep`、`injectedProbe`、`injectedReadTasks` 都会被序列化进页面执行，不能引用模块顶层变量，只能使用参数和自身内部定义。修改时尤其注意。
+- **MAIN world 边界**：`confirm-download` / `wait-dialog` / `check-path` / `list-dir` 需要读取页面主世界的 Vuex（`__vue_app__`），必须以 `world: 'MAIN'` 注入；探针和任务读取是独立注入函数，同样走 MAIN；其余纯 DOM 步骤保持 `ISOLATED`。
+- **选择器集中管理**：所有迅雷 DOM 选择器放在 `XUNLEI_SELECTORS`（`utils/xunleiAutomation.ts`）。页面结构变化时只改这里，不要散落到别处。结果对话框与「添加链接」对话框都有 `.task-parse-btn`，查找按钮时必须限定在结果对话框内；错误 toast 只在 `.el-message--error` / `.el-notification--error` 和结果框内 class 含 error/fail 的节点中匹配保守短语，避免文件名误报。
+- **保存路径解析**：`resolveDownloadPath(path, commit)` 通过 Vuex 的 `drive.treeNodeId/treeNodePath` 解析目录，复用面板自身 action `drive/getFolderList`、`drive/loadFolders`，只对已存在且可写目录生效。`commit=false` 只读检查，不修改面板；`commit=true` 才写入并校验。找不到目录时清空选择并回退迅雷当前目录，通知必须如实说明原因。不要自动创建目录，也不要自行拼接建任务请求。
+- **任务监控只读**：只读取 `drive.all/tasks/tasksDone` 并按需复用 `drive/getTask`；不调用 `fetchTasks` 改写列表，不自行请求 NAS HTTP API；页面关闭不自动重开，停止原因写回发送记录。监控失败不能影响发送结果或 popup 响应。
+- **点击步骤不自动重试**：新建任务、填链接、点击立即下载都有副作用，自动重试可能重复开弹窗或重复建任务；失败由用户通过通知/记录里的「重试」整链重跑。
+- **设置读取顺序**：`getSettings()` 是同步内存读取；使用前先 `await ensureSettingsLoaded()`。保存用 `saveSettings()`，其它上下文通过 `watchSettingsStorage()` 感知变更。存储 key 为 `nas_xunlei_settings`，位于 `storage.local`（不要改成 sync）；通知/监控/刷新开关都在同一 key 内。
+- **右键菜单注册时机**：只在 `onInstalled` 中 `removeAll` 后重建；Service Worker 冷启动不会再触发 `onInstalled`，菜单本身由浏览器持久化，不要每次启动重复创建。菜单 contexts 为 `link/selection/video/audio`，点击时从 `linkUrl`、`srcUrl` 或 `selectionText` 提取链接。
+- **标签页复用**：`findXunleiTab` 去掉 hash 后匹配，优先当前激活页；`openXunleiTab` 复用时会先确保 URL 指向配置地址（含 hash），需要时再 reload；`waitTabComplete` 每 5 秒 `chrome.tabs.get` 轮询，兼顾关闭检测与 Service Worker 保活。
+- **通知动作**：固定 ID 见 `utils/notifications.ts`；按钮动作存入 `storage.session`，Service Worker 重启后仍可点击。重试只读取 30 分钟内保存的 `nas_xunlei_last_send`，过期时提示重新发送，不要自动构造请求。
 - **WXT 约定**：`defineBackground` 等 API 由 WXT 自动导入，不要手动 import；`@/` 指向项目根目录（如 `@/utils/settings`）。
-- **manifest 权限**：当前为 `storage, contextMenus, tabs, scripting, notifications`；`host_permissions` 放行全部 http/https 是因为 NAS 地址由用户动态配置。新增权限需同步更新 README 并说明用途。
+- **manifest 权限**：当前为 `storage, contextMenus, tabs, scripting, notifications, alarms`；`host_permissions` 放行全部 http/https 是因为 NAS 地址由用户动态配置。`alarms` 用于任务监控的每分钟检查，新增权限需同步更新 README 并说明用途。
 - **UI 约定**：界面与通知文案使用中文；Vue SFC 使用 `<script setup lang="ts">` 与 scoped 样式；组件使用 Ant Design Vue。
 - **不要提交生成物**：`node_modules`、`.output`、`.wxt`、`.debug-profile*`、`chrome/`、`.zcode/` 与 `.env*` 均被忽略；不要为了让某个改动提交而修改 `.gitignore` 放行这些目录。
-- **不要绕过产品路线**：发送链路仍是 DOM 自动化 + 面板自身的建任务流程；路径预选复用面板 Vuex/action，不自行拼接建任务 HTTP 请求，也不要引入账号密码存储。
+- **不要绕过产品路线**：发送链路仍是 DOM 自动化 + 面板自身的建任务流程；路径预选与任务监控复用面板 Vuex/action，不自行拼接建任务或任务查询 HTTP 请求，也不要引入账号密码存储。
 
 ## 验证要求
 
 - 完成代码修改后至少运行 `pnpm check`（类型检查 + 生产构建）。
 - 仓库目前没有单元测试或 lint 脚本，不要声称运行了不存在的测试。
 - 端到端功能依赖真实 NAS 与已登录的迅雷 Web 会话：优先在 `pnpm deploy` 打开的调试实例中验证；无法验证时必须在交付说明中明确写出「未做真实 NAS 端到端验证」，并列出待测项。
+- 无副作用的验证：设置页「测试连接」、目录树读取、通知开关持久化、发送记录加载/清空。这些不需要创建真实下载任务。
+- 需要真实任务的验证（先取得用户对测试链接的批准）：立即/确认两种模式、路径回退、解析失败、任务失败/完成监控、批量合并通知、监控中关闭迅雷页、通知按钮在 Service Worker 停止后仍可用、并发发送互斥、不刷新模式残留弹窗拦截、首次安装引导。
+- 任务监控只在迅雷页打开时有效；测试时保持页面打开，并可用临时缩短硬超时/发现窗常量来验证停止路径（验证后恢复 24 小时/2 分钟/30 分钟）。
 - 构建出现 chunk 超过 500 kB 的警告属当前预期（Ant Design Vue 全量引入），不是失败。
 
 ## 文档同步
