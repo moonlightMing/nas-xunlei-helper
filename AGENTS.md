@@ -146,7 +146,7 @@
 - **番号匹配读写分离**：`injectedReadFileList` 只读拍平 BT 文件树并返回快照；`injectedApplyFileSelection` 只调用面板树组件 `setCheckedKeys` 并校验父组件 ID 集合/按钮状态；所有番号识别、类型分类、排序上限必须在 `utils/avMatch.ts` 纯函数中，不要塞进注入函数。树 hash 不一致/文件消失时两种模式都暂停；读取失败或组件能力缺失时严格暂停、回退按原勾选继续；父状态未同步或按钮禁用时两种模式都不点击。
 - **番号匹配产品边界**：只对 BT 文件树生效，直链跳过；严格模式下单个弹窗多任务任一未匹配就整单暂停（迅雷只有一个「立即下载」按钮）；排序只决定保留集合，不重排界面；`maxFilesPerTask` 可能漏分集，默认 0。
 - **根名番号只在零命中时兜底**：根/任务名带番号时，只有所有文件都未命中该番号才把无番号文件按根名继承（文件夹包场景）；一旦有文件命中，其余无番号文件一律 `code-mismatch` 排除，避免把广告/说明视频继承进来。手动番号同理。
-- **组件能力探测**：文件树/对话框通过 DOM 的 `__vueParentComponent` 向上按 `setCheckedKeys/getCheckedKeys/treeData/handelBtSelectChange` 能力识别，不依赖组件显示名；迅雷升级后能力缺失时严格暂停/回退继续，绝不瞎点。`confirm-download` 点击前必须检查按钮 `disabled`/`is-disabled`。
+- **组件能力探测**：迅雷生产构建未开启 `__FEATURE_PROD_DEVTOOLS__`，DOM 上没有 `__vueParentComponent`（`#app.__vue_app__._instance` 也可能为 null），因此注入脚本必须从 `#app._vnode.component` 向下遍历 vnode/组件树，按 `setCheckedKeys/getCheckedKeys/treeData/flatNodeList/checkedSource/handelBtSelectChange` 能力识别文件树与父组件，不依赖组件显示名；仅开发构建才回退到 DOM 的 `__vueParentComponent` 上溯。迅雷升级后能力缺失时严格暂停/回退继续，绝不瞎点。`confirm-download` 点击前必须检查按钮 `disabled`/`is-disabled`。
 - **番号匹配隐私**：手动番号/关键词仅 `storage.local`；历史只存计数和最多 3 个番号/任务名；预览本地文件夹只读文件名/大小，不上传；不引入模型或外部服务。
 - **选择器集中管理**：所有迅雷 DOM 选择器放在 `XUNLEI_SELECTORS`（`utils/xunleiAutomation.ts`）。页面结构变化时只改这里，不要散落到别处。结果对话框与「添加链接」对话框都有 `.task-parse-btn`，查找按钮时必须限定在结果对话框内；错误 toast 只在 `.el-message--error` / `.el-notification--error` 和结果框内 class 含 error/fail 的节点中匹配保守短语，避免文件名误报。
 - **保存路径解析**：`resolveDownloadPath(path, commit)` 通过 Vuex 的 `drive.treeNodeId/treeNodePath` 解析目录，复用面板自身 action `drive/getFolderList`、`drive/loadFolders`，只对已存在且可写目录生效。`commit=false` 只读检查，不修改面板；`commit=true` 才写入并校验。找不到目录时清空选择并回退迅雷当前目录，通知必须如实说明原因。不要自动创建目录，也不要自行拼接建任务请求。

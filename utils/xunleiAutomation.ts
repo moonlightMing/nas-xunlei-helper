@@ -236,6 +236,7 @@ async function runMatchingSendFlow(tabId: number, options: SendOptions): Promise
   const read = await readXunleiFileList(tabId, options.links);
   if (!read.ok || !read.snapshot) {
     const message = read.message || '读取迅雷文件列表失败';
+    if (read.debug) console.warn('[xunlei] 读取文件列表失败：', message, read.debug);
     if (!options.match.fallbackToDefault) {
       return {
         stage: 'match',
@@ -899,19 +900,52 @@ async function injectedReadFileList(
   }
   debugParts.push('dialog=1');
 
-  const findDialogComponent = (): any => {
-    let inst = (dialog as any).__vueParentComponent;
-    for (let depth = 0; inst && depth < 16; depth++) {
-      const vm = inst.proxy || inst.ctx || inst;
-      if (vm && Array.isArray(vm.taskAddUrls)) return vm;
-      inst = inst.parent;
-    }
-    return null;
+  const vmOf = (comp: any): any => (comp && (comp.proxy || comp.ctx)) || null;
+  // 迅雷生产构建未开启 __FEATURE_PROD_DEVTOOLS__，DOM 上没有 __vueParentComponent，
+  // #app.__vue_app__._instance 也可能为 null，只能从根 vnode 向下遍历组件树。
+  const collectComponents = (visit: (comp: any) => boolean): void => {
+    const seenVNode = new Set<any>();
+    const seenComp = new Set<any>();
+    let stopped = false;
+    const walkInstance = (inst: any): void => {
+      if (stopped || !inst || seenComp.has(inst)) return;
+      seenComp.add(inst);
+      stopped = visit(inst) === true;
+      if (!stopped && inst.subTree) walkVNode(inst.subTree);
+    };
+    const walkVNode = (vnode: any): void => {
+      if (stopped || !vnode || typeof vnode !== 'object' || seenVNode.has(vnode)) return;
+      seenVNode.add(vnode);
+      if (vnode.component) walkInstance(vnode.component);
+      if (stopped) return;
+      const branch = vnode.suspense?.activeBranch;
+      if (branch) walkVNode(branch);
+      if (Array.isArray(vnode.children)) {
+        for (const child of vnode.children) {
+          walkVNode(child);
+          if (stopped) return;
+        }
+      }
+    };
+    const container = document.querySelector('#app') as any;
+    const root = container?._vnode?.component ?? container?.__vue_app__?._instance;
+    if (root) walkInstance(root);
   };
-  const dialogVm = findDialogComponent();
-  const taskUrls = Array.isArray(dialogVm?.taskAddUrls)
-    ? dialogVm.taskAddUrls.map((url: any) => String(url))
-    : [];
+
+  const findDialogVm = (): any => {
+    let found: any = null;
+    collectComponents((comp) => {
+      const vm = vmOf(comp);
+      if (vm && Array.isArray(vm.taskAddUrls) && vm.isVisible === true) {
+        found = vm;
+        return true;
+      }
+      return false;
+    });
+    return found;
+  };
+
+  const dialogVm = findDialogVm();
   const hasBtFlag =
     typeof dialogVm?.isBtSingletask === 'boolean' || typeof dialogVm?.isBatchTask === 'boolean';
   const inputLooksBt = links.some(
@@ -926,101 +960,130 @@ async function injectedReadFileList(
       !inputLooksBt &&
       !links.some((link) => /^thunder:/i.test(link));
 
-  let treeRoot = dialog.querySelector(selectors.fileTree) as HTMLElement | null;
-  const treeWaitTicks = knownNonBt ? 12 : 32;
-  for (let i = 0; !treeRoot && i < treeWaitTicks; i++) {
-    await sleep(250);
-    dialog = findDialog() ?? dialog;
-    treeRoot = dialog.querySelector(selectors.fileTree) as HTMLElement | null;
-  }
-  if (!treeRoot) {
-    // 只有确认是非 BT 任务才按直链跳过；BT/未知一律暂停，避免把慢种子当直链全下
-    if (!knownNonBt) {
-      return {
-        ok: false,
-        message: '文件树尚未就绪，请稍后重试',
-        debug: debug() + `;tree=0;looksBt=${looksBt ? 1 : 0};knownNonBt=0`,
-      };
-    }
-    return {
-      ok: true,
-      snapshot: {
-        kind: 'single',
-        treeHash: '',
-        groups: [],
-        checkedIds: [],
-        buttonDisabled: isButtonDisabled(findDownloadButton(dialog)),
-        truncated: false,
-      },
-      debug: debug() + ';tree=0;kind=single',
-    };
-  }
-  debugParts.push('tree=1');
+  const matchesTreeParent = (vm: any): boolean =>
+    Boolean(
+      vm &&
+        Array.isArray(vm.treeData) &&
+        (Array.isArray(vm.flatNodeList) ||
+          Array.isArray(vm.checkedSource) ||
+          Array.isArray(vm.computedCheckedResource) ||
+          typeof vm.handelBtSelectChange === 'function'),
+    );
 
-  const MAX_LEAVES = 5000;
-  let btVm: any = null;
-  let parentVm: any = null;
-  let treeData: any[] = [];
-
-  const discover = (): boolean => {
-    btVm = null;
-    parentVm = null;
-    treeData = [];
-    dialog = findDialog() ?? dialog;
-    treeRoot = dialog?.querySelector(selectors.fileTree) as HTMLElement | null;
-    if (!treeRoot) return false;
-    const treeEl = (treeRoot.querySelector('.el-tree') ?? dialog?.querySelector('.el-tree')) as any;
-    if (!treeEl) return false;
-    let inst = treeEl.__vueParentComponent;
-    for (let depth = 0; inst && depth < 16; depth++) {
-      const vm = inst.proxy || inst.ctx || inst;
+  const findTreeContext = (): { vm: any; parent: any; tree: any[] } | null => {
+    const treeDialog = dialog;
+    if (!treeDialog) return null;
+    let treeInst: any = null;
+    let treeVm: any = null;
+    collectComponents((comp) => {
+      const vm = vmOf(comp);
       if (
         vm &&
-        !btVm &&
         typeof vm.setCheckedKeys === 'function' &&
         typeof vm.getCheckedKeys === 'function'
       ) {
-        btVm = vm;
+        const el = comp.subTree?.el;
+        if (el && el.nodeType === 1 && treeDialog.contains(el)) {
+          treeInst = comp;
+          treeVm = vm;
+          return true;
+        }
       }
-      if (
-        btVm &&
-        vm &&
-        vm !== btVm &&
-        Array.isArray(vm.treeData) &&
-        (typeof vm.handelBtSelectChange === 'function' || Array.isArray(vm.flatNodeList))
-      ) {
-        parentVm = vm;
-        treeData = vm.treeData;
-        break;
+      return false;
+    });
+    if (!treeInst || !treeVm) return null;
+    for (let inst = treeInst.parent, depth = 0; inst && depth < 16; inst = inst.parent, depth++) {
+      const parentVm = vmOf(inst);
+      if (matchesTreeParent(parentVm)) {
+        return { vm: treeVm, parent: parentVm, tree: parentVm.treeData };
       }
-      inst = inst.parent;
     }
-    return Boolean(btVm && parentVm && treeData.length > 0);
+    return null;
   };
 
-  let ready = false;
-  for (let i = 0; i < 20; i++) {
-    if (discover()) {
-      ready = true;
-      break;
+  // 旧版/开发构建仍会写 __vueParentComponent，保留 DOM 上溯作为兜底。
+  const findTreeContextByDom = (): { vm: any; parent: any; tree: any[] } | null => {
+    dialog = findDialog() ?? dialog;
+    const treeDialog = dialog;
+    if (!treeDialog) return null;
+    const treeRoot = treeDialog.querySelector(selectors.fileTree) as HTMLElement | null;
+    if (!treeRoot) return null;
+    const treeEl = (treeRoot.querySelector('.el-tree') ??
+      treeDialog.querySelector('.el-tree')) as any;
+    let treeVm: any = null;
+    let parentVm: any = null;
+    for (
+      let inst = treeEl?.__vueParentComponent, depth = 0;
+      inst && depth < 16;
+      inst = inst.parent, depth++
+    ) {
+      const vm = vmOf(inst);
+      if (!vm) continue;
+      if (!treeVm) {
+        if (typeof vm.setCheckedKeys === 'function' && typeof vm.getCheckedKeys === 'function') {
+          treeVm = vm;
+        }
+        continue;
+      }
+      if (vm !== treeVm && matchesTreeParent(vm)) {
+        parentVm = vm;
+        break;
+      }
     }
+    return treeVm && parentVm ? { vm: treeVm, parent: parentVm, tree: parentVm.treeData } : null;
+  };
+
+  let context: { vm: any; parent: any; tree: any[] } | null = null;
+  let treePresent = false;
+  let attempts = 0;
+  const treeWaitTicks = knownNonBt ? 12 : 32;
+  for (let i = 0; i < treeWaitTicks; i++) {
+    dialog = findDialog() ?? dialog;
+    if (!treePresent && dialog.querySelector(selectors.fileTree)) treePresent = true;
+    context = findTreeContext() ?? findTreeContextByDom();
+    attempts += 1;
+    if (context && context.tree.length > 0) break;
     await sleep(250);
   }
-  if (!btVm || !parentVm) {
+  debugParts.push(
+    `tries=${attempts};tree=${treePresent ? 1 : 0};ctx=${context ? 1 : 0};roots=${
+      context ? context.tree.length : 0
+    }`,
+  );
+  if (!context || !context.tree.length) {
+    // 只有确认是非 BT 任务才按直链跳过；BT/未知一律暂停，避免把慢种子当直链全下
+    if (!treePresent && knownNonBt) {
+      return {
+        ok: true,
+        snapshot: {
+          kind: 'single',
+          treeHash: '',
+          groups: [],
+          checkedIds: [],
+          buttonDisabled: isButtonDisabled(findDownloadButton(dialog)),
+          truncated: false,
+        },
+        debug: debug() + ';kind=single',
+      };
+    }
+    if (!treePresent) {
+      return {
+        ok: false,
+        message: '文件树尚未就绪，请稍后重试',
+        debug: debug() + `;looksBt=${looksBt ? 1 : 0};knownNonBt=0`,
+      };
+    }
     return {
       ok: false,
-      message: '无法读取迅雷文件树组件，迅雷页面可能已更新',
-      debug: debug() + ';component=0',
+      message: context ? '迅雷文件树为空，解析可能尚未完成' : '无法读取迅雷文件树组件，迅雷页面可能已更新',
+      debug: debug() + (context ? ';roots=0' : ';component=0'),
     };
   }
-  debugParts.push('component=1');
-  if (!ready || !treeData.length) {
-    return {
-      ok: false,
-      message: '迅雷文件树为空，解析可能尚未完成',
-      debug: debug() + ';roots=0',
-    };
-  }
+
+  const MAX_LEAVES = 5000;
+  const btVm = context.vm;
+  const parentVm = context.parent;
+  const treeData = context.tree;
 
   const groups: SnapshotGroup[] = [];
   let leafCount = 0;
@@ -1128,7 +1191,7 @@ async function injectedReadFileList(
       buttonDisabled,
       truncated: false,
     },
-    debug: debug() + `;roots=${groups.length};leaves=${leafIds.size}`,
+    debug: debug() + `;leaves=${leafIds.size}`,
   };
 }
 
@@ -1183,57 +1246,123 @@ async function injectedApplyFileSelection(
   let dialog = findDialog();
   if (!dialog) return { ok: false, message: '未找到迅雷解析弹窗', attempted: false };
 
-  let btVm: any = null;
-  let parentVm: any = null;
-  let treeData: any[] = [];
+  const vmOf = (comp: any): any => (comp && (comp.proxy || comp.ctx)) || null;
+  // 与读取步骤一致：生产构建没有 __vueParentComponent，从根 vnode 向下找组件。
+  const collectComponents = (visit: (comp: any) => boolean): void => {
+    const seenVNode = new Set<any>();
+    const seenComp = new Set<any>();
+    let stopped = false;
+    const walkInstance = (inst: any): void => {
+      if (stopped || !inst || seenComp.has(inst)) return;
+      seenComp.add(inst);
+      stopped = visit(inst) === true;
+      if (!stopped && inst.subTree) walkVNode(inst.subTree);
+    };
+    const walkVNode = (vnode: any): void => {
+      if (stopped || !vnode || typeof vnode !== 'object' || seenVNode.has(vnode)) return;
+      seenVNode.add(vnode);
+      if (vnode.component) walkInstance(vnode.component);
+      if (stopped) return;
+      const branch = vnode.suspense?.activeBranch;
+      if (branch) walkVNode(branch);
+      if (Array.isArray(vnode.children)) {
+        for (const child of vnode.children) {
+          walkVNode(child);
+          if (stopped) return;
+        }
+      }
+    };
+    const container = document.querySelector('#app') as any;
+    const root = container?._vnode?.component ?? container?.__vue_app__?._instance;
+    if (root) walkInstance(root);
+  };
 
-  const discover = (): boolean => {
-    btVm = null;
-    parentVm = null;
-    treeData = [];
-    dialog = findDialog() ?? dialog;
-    const treeRoot = dialog?.querySelector(selectors.fileTree) as HTMLElement | null;
-    if (!treeRoot) return false;
-    const treeEl = (treeRoot.querySelector('.el-tree') ?? dialog?.querySelector('.el-tree')) as any;
-    if (!treeEl) return false;
-    let inst = treeEl.__vueParentComponent;
-    for (let depth = 0; inst && depth < 16; depth++) {
-      const vm = inst.proxy || inst.ctx || inst;
+  const matchesTreeParent = (vm: any): boolean =>
+    Boolean(
+      vm &&
+        Array.isArray(vm.treeData) &&
+        (Array.isArray(vm.flatNodeList) ||
+          Array.isArray(vm.checkedSource) ||
+          Array.isArray(vm.computedCheckedResource) ||
+          typeof vm.handelBtSelectChange === 'function'),
+    );
+
+  const findTreeContext = (): { vm: any; parent: any; tree: any[] } | null => {
+    const treeDialog = dialog;
+    if (!treeDialog) return null;
+    let treeInst: any = null;
+    let treeVm: any = null;
+    collectComponents((comp) => {
+      const vm = vmOf(comp);
       if (
         vm &&
-        !btVm &&
         typeof vm.setCheckedKeys === 'function' &&
         typeof vm.getCheckedKeys === 'function'
       ) {
-        btVm = vm;
+        const el = comp.subTree?.el;
+        if (el && el.nodeType === 1 && treeDialog.contains(el)) {
+          treeInst = comp;
+          treeVm = vm;
+          return true;
+        }
       }
-      if (
-        btVm &&
-        vm &&
-        vm !== btVm &&
-        Array.isArray(vm.treeData) &&
-        (typeof vm.handelBtSelectChange === 'function' || Array.isArray(vm.flatNodeList))
-      ) {
-        parentVm = vm;
-        treeData = vm.treeData;
-        break;
+      return false;
+    });
+    if (!treeInst || !treeVm) return null;
+    for (let inst = treeInst.parent, depth = 0; inst && depth < 16; inst = inst.parent, depth++) {
+      const parentVm = vmOf(inst);
+      if (matchesTreeParent(parentVm)) {
+        return { vm: treeVm, parent: parentVm, tree: parentVm.treeData };
       }
-      inst = inst.parent;
     }
-    return Boolean(btVm && parentVm && treeData.length > 0);
+    return null;
   };
 
-  let ready = false;
-  for (let i = 0; i < 8; i++) {
-    if (discover()) {
-      ready = true;
-      break;
+  // 旧版/开发构建仍会写 __vueParentComponent，保留 DOM 上溯作为兜底。
+  const findTreeContextByDom = (): { vm: any; parent: any; tree: any[] } | null => {
+    dialog = findDialog() ?? dialog;
+    const treeDialog = dialog;
+    if (!treeDialog) return null;
+    const treeRoot = treeDialog.querySelector(selectors.fileTree) as HTMLElement | null;
+    if (!treeRoot) return null;
+    const treeEl = (treeRoot.querySelector('.el-tree') ??
+      treeDialog.querySelector('.el-tree')) as any;
+    let treeVm: any = null;
+    let parentVm: any = null;
+    for (
+      let inst = treeEl?.__vueParentComponent, depth = 0;
+      inst && depth < 16;
+      inst = inst.parent, depth++
+    ) {
+      const vm = vmOf(inst);
+      if (!vm) continue;
+      if (!treeVm) {
+        if (typeof vm.setCheckedKeys === 'function' && typeof vm.getCheckedKeys === 'function') {
+          treeVm = vm;
+        }
+        continue;
+      }
+      if (vm !== treeVm && matchesTreeParent(vm)) {
+        parentVm = vm;
+        break;
+      }
     }
+    return treeVm && parentVm ? { vm: treeVm, parent: parentVm, tree: parentVm.treeData } : null;
+  };
+
+  let context: { vm: any; parent: any; tree: any[] } | null = null;
+  for (let i = 0; i < 8; i++) {
+    dialog = findDialog() ?? dialog;
+    context = findTreeContext() ?? findTreeContextByDom();
+    if (context && context.tree.length > 0) break;
     await sleep(100);
   }
-  if (!ready || !btVm || !parentVm || !treeData.length) {
+  if (!context || !context.tree.length) {
     return { ok: false, message: '无法读取迅雷文件树组件', attempted: false };
   }
+  const btVm = context.vm;
+  const parentVm = context.parent;
+  const treeData = context.tree;
 
   const groups: Array<{ rootId: string; files: string[] }> = [];
   const leafIds = new Set<string>();
