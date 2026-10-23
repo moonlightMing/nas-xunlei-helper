@@ -821,13 +821,24 @@ function planGroup(
   const detected = detectTargets(group, eligible, settings, manualCodes, extraCodes);
   const targets = detected.targets;
 
+  // 根名兜底只服务于“整个任务的文件都没带番号”的包：一旦有文件命中，
+  // 其余无番号文件更可能是广告/说明，不能跟着继承，否则会误勾选。
+  const hitTargetKeys = new Set<string>();
+  for (const info of eligible) {
+    for (const candidate of info.candidates) {
+      if (targets.some((target) => target.parsed.baseKey === candidate.baseKey)) {
+        hitTargetKeys.add(candidate.baseKey);
+      }
+    }
+  }
+  const canInherit = targets.some(
+    (target) => target.inheritFromRoot && !hitTargetKeys.has(target.parsed.baseKey),
+  );
+
   const matched: Array<{ info: FileInfo; source: 'manual' | 'auto' }> = [];
   for (const info of eligible) {
     const hits = matchesAnyTarget(info, targets);
-    const inherited =
-      !hits.length &&
-      info.candidates.length === 0 &&
-      targets.some((target) => target.inheritFromRoot);
+    const inherited = !hits.length && info.candidates.length === 0 && canInherit;
     if (hits.length || inherited) {
       const source = hits.some((target) => target.source === 'manual') ? 'manual' : 'auto';
       matched.push({ info, source });
