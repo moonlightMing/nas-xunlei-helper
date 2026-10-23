@@ -16,6 +16,9 @@ export type SendErrorCode =
   | 'parse-timeout'
   | 'download-click-failed'
   | 'injection-failed'
+  | 'av-unmatched'
+  | 'av-file-list-timeout'
+  | 'av-selection-failed'
   | 'busy'
   | 'unknown';
 
@@ -130,6 +133,27 @@ export const SEND_ERROR_META: Record<SendErrorCode, SendErrorMeta> = {
     hint: '请确认迅雷页面未关闭，或稍后重试',
     primary: 'open-xunlei',
     retryable: true,
+    notify: true,
+    severity: 'error',
+  },
+  'av-unmatched': {
+    hint: '请打开迅雷页面手动检查文件勾选，或调整番号匹配规则',
+    primary: 'open-xunlei',
+    retryable: false,
+    notify: true,
+    severity: 'warning',
+  },
+  'av-file-list-timeout': {
+    hint: '文件列表未就绪，请打开迅雷页面手动处理',
+    primary: 'open-xunlei',
+    retryable: false,
+    notify: true,
+    severity: 'warning',
+  },
+  'av-selection-failed': {
+    hint: '请打开迅雷页面检查文件勾选、磁盘空间或登录状态',
+    primary: 'open-xunlei',
+    retryable: false,
     notify: true,
     severity: 'error',
   },

@@ -19,6 +19,16 @@
  * 进页面执行，必须完全自包含，不能引用本文件其它顶层作用域的变量。
  */
 
+import {
+  buildMatchPlan,
+  toMatchSummary,
+  type AvMatchSettings,
+  type FileListSnapshot,
+  type MatchPlan,
+  type MatchSummary,
+  type SnapshotFile,
+  type SnapshotGroup,
+} from '@/utils/avMatch';
 import type { DownloadMode } from '@/utils/settings';
 import { classifyInjectionError, type SendErrorCode } from '@/utils/sendErrors';
 
@@ -36,6 +46,10 @@ export const XUNLEI_SELECTORS = {
   errorToast: '.el-message--error, .el-notification--error',
   /** 登录表单（用于识别会话失效） */
   loginForm: 'input[type="password"]',
+  /** BT 解析结果的文件树容器 */
+  fileTree: '.result-nas-task-dialog .bt_select_plus',
+  /** Element Plus 文件树节点 */
+  fileTreeEl: '.result-nas-task-dialog .bt_select_plus .el-tree',
 } as const;
 
 /** 自动化单步等待元素的超时（毫秒） */
@@ -49,6 +63,7 @@ export interface SendOptions {
   links: string[];
   downloadPath: string;
   mode: DownloadMode;
+  match: AvMatchSettings;
 }
 
 /** 默认路径应用情况 */
@@ -66,7 +81,7 @@ export interface PathApplied {
 /** 发送流程结果（background 与 popup 之间传递，也可用于通知文案） */
 export interface SendOutcome {
   /** 流程走到哪一步，失败时用于定位 */
-  stage: 'prepare' | 'open-page' | AutomationStep | 'done';
+  stage: 'prepare' | 'open-page' | AutomationStep | 'match' | 'done';
   ok: boolean;
   /** 失败原因分类，供通知/UI 决定动作 */
   code?: SendErrorCode;
@@ -74,6 +89,10 @@ export interface SendOutcome {
   pathApplied?: PathApplied;
   /** 立即下载点击后读到的任务 id，用于任务监控初始候选 */
   taskIds?: string[];
+  /** 严格模式/文件列表异常时暂停，不点击立即下载 */
+  paused?: { reason: 'unmatched' | 'file-list-timeout' };
+  /** 番号匹配摘要（只含计数，不含完整文件列表） */
+  match?: MatchSummary;
 }
 
 interface StepResult {
@@ -121,6 +140,32 @@ export interface TaskStateSnapshot {
   tasks: Record<string, TaskStateItem>;
 }
 
+export interface ReadFileListResult {
+  ok: boolean;
+  snapshot?: FileListSnapshot;
+  message?: string;
+  debug?: string;
+}
+
+export interface ApplySelectionPlan {
+  treeHash: string;
+  selectedIds: string[];
+  preserveRootIds: string[];
+}
+
+export interface ApplySelectionResult {
+  ok: boolean;
+  /** 是否已经调用过 setCheckedKeys；false 表示页面状态未被修改 */
+  attempted?: boolean;
+  stale?: boolean;
+  applied?: boolean;
+  parentSynced?: boolean;
+  buttonDisabled?: boolean;
+  checkedCount?: number;
+  message?: string;
+  debug?: string;
+}
+
 /**
  * 执行完整发送流程（在 background service worker 中调用）。
  * 每一步单独注入一次脚本，步骤间状态由页面 DOM / Vuex 承载。
@@ -141,30 +186,300 @@ export async function runSendFlow(tabId: number, options: SendOptions): Promise<
     }
   }
 
-  if (options.mode === 'confirm') {
-    const result = await execStep(tabId, 'wait-dialog', { downloadPath: options.downloadPath });
-    if (!result.ok) {
-      return { stage: 'wait-dialog', ok: false, code: result.code, message: result.message };
+  if (!options.match.enabled) {
+    if (options.mode === 'confirm') {
+      const result = await execStep(tabId, 'wait-dialog', { downloadPath: options.downloadPath });
+      if (!result.ok) {
+        return { stage: 'wait-dialog', ok: false, code: result.code, message: result.message };
+      }
+      return {
+        stage: 'done',
+        ok: true,
+        message: buildDoneMessage('confirm', result.pathApplied),
+        pathApplied: result.pathApplied,
+      };
     }
+
+    const result = await execStep(tabId, 'confirm-download', { downloadPath: options.downloadPath });
+    if (!result.ok) {
+      return { stage: 'confirm-download', ok: false, code: result.code, message: result.message };
+    }
+    const taskIds = (result.data as { taskIds?: unknown } | undefined)?.taskIds;
     return {
       stage: 'done',
       ok: true,
-      message: buildDoneMessage('confirm', result.pathApplied),
+      message: buildDoneMessage('immediate', result.pathApplied),
       pathApplied: result.pathApplied,
+      taskIds: Array.isArray(taskIds) ? taskIds.filter((id): id is string => typeof id === 'string') : undefined,
     };
   }
 
-  const result = await execStep(tabId, 'confirm-download', { downloadPath: options.downloadPath });
-  if (!result.ok) {
-    return { stage: 'confirm-download', ok: false, code: result.code, message: result.message };
+  return runMatchingSendFlow(tabId, options);
+}
+
+function matchSuffix(plan: MatchPlan): string {
+  if (plan.status === 'skipped') return '';
+  const fallbackNote =
+    plan.policy === 'fallback' && plan.status !== 'applied'
+      ? '（已保留未匹配任务的原勾选）'
+      : '';
+  return `；${plan.summary}${fallbackNote}`;
+}
+
+async function runMatchingSendFlow(tabId: number, options: SendOptions): Promise<SendOutcome> {
+  const wait = await execStep(tabId, 'wait-dialog', { downloadPath: options.downloadPath });
+  if (!wait.ok) {
+    return { stage: 'wait-dialog', ok: false, code: wait.code, message: wait.message };
   }
-  const taskIds = (result.data as { taskIds?: unknown } | undefined)?.taskIds;
+  const pathApplied = wait.pathApplied;
+
+  const read = await readXunleiFileList(tabId, options.links);
+  if (!read.ok || !read.snapshot) {
+    const message = read.message || '读取迅雷文件列表失败';
+    if (!options.match.fallbackToDefault) {
+      return {
+        stage: 'match',
+        ok: true,
+        paused: { reason: 'file-list-timeout' },
+        code: 'av-file-list-timeout',
+        message: `未能读取迅雷文件列表，已暂停：${message}`,
+        pathApplied,
+      };
+    }
+    return finishWithoutMatch(
+      tabId,
+      options,
+      `未能读取迅雷文件列表，已按迅雷原勾选继续：${message}`,
+      undefined,
+      pathApplied,
+    );
+  }
+
+  const snapshot = read.snapshot;
+  const plan = buildMatchPlan(snapshot, options.match, options.links);
+  const summary = toMatchSummary(plan);
+  const strict = !options.match.fallbackToDefault;
+
+  if (plan.skipped) {
+    if (plan.skipped === 'no-file-list') {
+      return finishWithoutMatch(tabId, options, plan.summary, plan, pathApplied);
+    }
+    if (strict) {
+      return {
+        stage: 'match',
+        ok: true,
+        paused: { reason: 'file-list-timeout' },
+        code: 'av-file-list-timeout',
+        message: `${plan.summary}，已暂停`,
+        match: summary,
+        pathApplied,
+      };
+    }
+    return finishWithoutMatch(
+      tabId,
+      options,
+      `${plan.summary}；已按迅雷原勾选继续`,
+      plan,
+      pathApplied,
+    );
+  }
+
+  if (strict && plan.status !== 'applied') {
+    const applied = await applyPlanOrHandle(tabId, plan, snapshot, pathApplied, summary, false);
+    if ('outcome' in applied) return applied.outcome;
+    return {
+      stage: 'match',
+      ok: true,
+      paused: { reason: 'unmatched' },
+      code: 'av-unmatched',
+      message: `${plan.summary}。未匹配任务已取消勾选，已停在迅雷弹窗，请手动检查后下载`,
+      match: summary,
+      pathApplied,
+    };
+  }
+
+  if (!strict && plan.status === 'empty') {
+    if (!snapshot.checkedIds.length) {
+      return {
+        stage: 'match',
+        ok: true,
+        paused: { reason: 'unmatched' },
+        code: 'av-unmatched',
+        message: `${plan.summary}；迅雷默认也没有勾选文件，已暂停`,
+        match: summary,
+        pathApplied,
+      };
+    }
+    return finishWithoutMatch(
+      tabId,
+      options,
+      `${plan.summary}；已保留迅雷原勾选继续`,
+      plan,
+      pathApplied,
+    );
+  }
+
+  const applied = await applyPlanOrHandle(tabId, plan, snapshot, pathApplied, summary, !strict);
+  if ('outcome' in applied) return applied.outcome;
+  if (applied.warning) {
+    return finishWithoutMatch(
+      tabId,
+      options,
+      `${plan.summary}；${applied.warning}，已按迅雷原勾选继续`,
+      undefined,
+      pathApplied,
+    );
+  }
+  if (applied.buttonDisabled) {
+    return {
+      stage: 'match',
+      ok: false,
+      code: 'av-selection-failed',
+      message: '「立即下载」按钮不可用，请打开迅雷检查文件选择、磁盘空间或登录状态',
+      match: summary,
+      pathApplied,
+    };
+  }
+
+  if (options.mode === 'confirm') {
+    return {
+      stage: 'done',
+      ok: true,
+      message: `${buildDoneMessage('confirm', pathApplied)}${matchSuffix(plan)}`,
+      pathApplied,
+      match: summary,
+    };
+  }
+
+  const click = await execStep(tabId, 'confirm-download', {
+    downloadPath: options.downloadPath,
+    skipPath: '1',
+  });
+  if (!click.ok) {
+    return {
+      stage: 'confirm-download',
+      ok: false,
+      code: click.code,
+      message: click.message,
+      pathApplied: click.pathApplied ?? pathApplied,
+      match: summary,
+    };
+  }
+  const taskIds = (click.data as { taskIds?: unknown } | undefined)?.taskIds;
   return {
     stage: 'done',
     ok: true,
-    message: buildDoneMessage('immediate', result.pathApplied),
-    pathApplied: result.pathApplied,
+    message: `${buildDoneMessage('immediate', click.pathApplied ?? pathApplied)}${matchSuffix(plan)}`,
+    pathApplied: click.pathApplied ?? pathApplied,
     taskIds: Array.isArray(taskIds) ? taskIds.filter((id): id is string => typeof id === 'string') : undefined,
+    match: summary,
+  };
+}
+
+async function applyPlanOrHandle(
+  tabId: number,
+  plan: MatchPlan,
+  snapshot: FileListSnapshot,
+  pathApplied: PathApplied | undefined,
+  summary: MatchSummary,
+  fallback: boolean,
+): Promise<{ buttonDisabled: boolean; warning?: string } | { outcome: SendOutcome }> {
+  const result = await applyXunleiFileSelection(tabId, {
+    treeHash: snapshot.treeHash,
+    selectedIds: plan.selectedIds,
+    preserveRootIds: plan.preserveRootIds,
+  });
+
+  if (result.ok && result.applied && result.parentSynced) {
+    return { buttonDisabled: Boolean(result.buttonDisabled) };
+  }
+
+  if (!result.attempted) {
+    if (result.stale) {
+      return {
+        outcome: {
+          stage: 'match',
+          ok: true,
+          paused: { reason: 'file-list-timeout' },
+          code: 'av-file-list-timeout',
+          message: `${result.message || '文件树在匹配期间发生变化'}，已暂停，请打开迅雷手动处理`,
+          match: summary,
+          pathApplied,
+        },
+      };
+    }
+    if (fallback) {
+      return {
+        buttonDisabled: false,
+        warning: result.message || '无法应用文件勾选',
+      };
+    }
+    return {
+      outcome: {
+        stage: 'match',
+        ok: true,
+        paused: { reason: 'file-list-timeout' },
+        code: 'av-file-list-timeout',
+        message: `${result.message || '无法应用文件勾选'}，已暂停，请打开迅雷手动处理`,
+        match: summary,
+        pathApplied,
+      },
+    };
+  }
+
+  return {
+    outcome: {
+      stage: 'match',
+      ok: false,
+      code: 'av-selection-failed',
+      message: result.message || '应用文件勾选失败，已停止点击下载',
+      match: summary,
+      pathApplied,
+    },
+  };
+}
+
+async function finishWithoutMatch(
+  tabId: number,
+  options: SendOptions,
+  prefix: string,
+  plan: MatchPlan | undefined,
+  pathApplied: PathApplied | undefined,
+): Promise<SendOutcome> {
+  const summary = plan ? toMatchSummary(plan) : undefined;
+
+  if (options.mode === 'confirm') {
+    return {
+      stage: 'done',
+      ok: true,
+      message: `${prefix}；${buildDoneMessage('confirm', pathApplied)}`,
+      pathApplied,
+      match: summary,
+    };
+  }
+
+  const click = await execStep(tabId, 'confirm-download', {
+    downloadPath: options.downloadPath,
+    skipPath: '1',
+  });
+  if (!click.ok) {
+    return {
+      stage: 'confirm-download',
+      ok: false,
+      code: click.code,
+      message: click.message,
+      pathApplied: click.pathApplied ?? pathApplied,
+      match: summary,
+    };
+  }
+  const taskIds = (click.data as { taskIds?: unknown } | undefined)?.taskIds;
+  return {
+    stage: 'done',
+    ok: true,
+    message: `${prefix}；${buildDoneMessage('immediate', click.pathApplied ?? pathApplied)}`,
+    pathApplied: click.pathApplied ?? pathApplied,
+    taskIds: Array.isArray(taskIds) ? taskIds.filter((id): id is string => typeof id === 'string') : undefined,
+    match: summary,
   };
 }
 
@@ -370,6 +685,74 @@ export async function listXunleiDir(
 }
 
 /**
+ * 只读读取当前解析弹窗的文件树。不点击、不修改勾选；
+ * 非 BT 任务（没有文件树）返回 kind='single'。
+ */
+export async function readXunleiFileList(
+  tabId: number,
+  links: string[] = [],
+  requireVisible = true,
+): Promise<ReadFileListResult> {
+  try {
+    const injection = chrome.scripting.executeScript({
+      target: { tabId },
+      func: injectedReadFileList,
+      args: [XUNLEI_SELECTORS, links, requireVisible],
+      world: 'MAIN',
+    });
+    const timeout = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), 20_000);
+    });
+    const results = await Promise.race([injection, timeout]);
+    if (!results) return { ok: false, message: '读取迅雷文件列表超时' };
+    const result = results[0]?.result as ReadFileListResult | undefined;
+    if (!result || typeof result.ok !== 'boolean') {
+      return { ok: false, message: '注入脚本未返回有效结果' };
+    }
+    return result;
+  } catch (error) {
+    return {
+      ok: false,
+      message: `读取迅雷文件列表失败：${(error as Error).message}`,
+    };
+  }
+}
+
+/**
+ * 应用勾选计划：调用面板自身的树组件 setCheckedKeys，不伪造 change 事件、不点 DOM 复选框。
+ * 树结构变化（hash 不一致）时不修改任何状态。
+ */
+export async function applyXunleiFileSelection(
+  tabId: number,
+  plan: ApplySelectionPlan,
+): Promise<ApplySelectionResult> {
+  try {
+    const injection = chrome.scripting.executeScript({
+      target: { tabId },
+      func: injectedApplyFileSelection,
+      args: [XUNLEI_SELECTORS, plan],
+      world: 'MAIN',
+    });
+    const timeout = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), 8_000);
+    });
+    const results = await Promise.race([injection, timeout]);
+    if (!results) return { ok: false, message: '应用文件勾选超时', attempted: true };
+    const result = results[0]?.result as ApplySelectionResult | undefined;
+    if (!result || typeof result.ok !== 'boolean') {
+      return { ok: false, message: '注入脚本未返回有效结果', attempted: true };
+    }
+    return result;
+  } catch (error) {
+    return {
+      ok: false,
+      message: `应用文件勾选失败：${(error as Error).message}`,
+      attempted: true,
+    };
+  }
+}
+
+/**
  * 读取任务列表快照。currentIds 包含 tasks/tasksDone/all 的并集；
  * refresh=true 时对最多 3 个非终态 tracked id 调用面板自身的 drive/getTask。
  */
@@ -446,6 +829,543 @@ async function injectedProbe(selectors: typeof XUNLEI_SELECTORS) {
     loginText,
     errorText: errorMatch?.[0] ?? '',
     hasResultDialog: dialogVisible,
+  };
+}
+
+/**
+ * 注入页面读取 BT 文件树（自包含，勿引用外部作用域）。
+ * 只读：不点击、不修改勾选；非 BT 任务返回 kind='single'。
+ */
+async function injectedReadFileList(
+  selectors: typeof XUNLEI_SELECTORS,
+  links: string[],
+  requireVisible: boolean,
+): Promise<ReadFileListResult> {
+  const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+  const isVisible = (el: Element | null): boolean => {
+    if (!el) return false;
+    const node = el as HTMLElement;
+    return node.offsetParent !== null || node.getBoundingClientRect().width > 0;
+  };
+  const findDialog = (): HTMLElement | null => {
+    const nodes = Array.from(document.querySelectorAll(selectors.taskDialog)) as HTMLElement[];
+    if (!nodes.length) return null;
+    const visible = nodes.filter(isVisible);
+    if (visible.length) return visible[visible.length - 1] ?? null;
+    return requireVisible ? null : nodes[nodes.length - 1] ?? null;
+  };
+  const hash = (text: string): string => {
+    let value = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      value ^= text.charCodeAt(i);
+      value = Math.imul(value, 16777619);
+    }
+    return (value >>> 0).toString(36);
+  };
+  const findDownloadButton = (dialog: HTMLElement): HTMLButtonElement | null => {
+    const buttons = Array.from(
+      dialog.querySelectorAll(selectors.parseButton),
+    ) as HTMLButtonElement[];
+    return (
+      buttons.find((button) => (button.textContent || '').includes('立即下载')) ??
+      buttons[buttons.length - 1] ??
+      null
+    );
+  };
+  const isButtonDisabled = (button: HTMLButtonElement | null): boolean => {
+    if (!button) return true;
+    return (
+      Boolean(button.disabled) ||
+      button.getAttribute('aria-disabled') === 'true' ||
+      button.classList.contains('is-disabled') ||
+      button.classList.contains('disabled')
+    );
+  };
+
+  const debugParts: string[] = [];
+  const debug = () => debugParts.join('; ');
+
+  let dialog = findDialog();
+  for (let i = 0; !dialog && i < 12; i++) {
+    await sleep(250);
+    dialog = findDialog();
+  }
+  if (!dialog) {
+    return {
+      ok: false,
+      message: '未找到迅雷解析弹窗，请先在迅雷页面解析一个磁力/种子',
+      debug: 'dialog=0',
+    };
+  }
+  debugParts.push('dialog=1');
+
+  const findDialogComponent = (): any => {
+    let inst = (dialog as any).__vueParentComponent;
+    for (let depth = 0; inst && depth < 16; depth++) {
+      const vm = inst.proxy || inst.ctx || inst;
+      if (vm && Array.isArray(vm.taskAddUrls)) return vm;
+      inst = inst.parent;
+    }
+    return null;
+  };
+  const dialogVm = findDialogComponent();
+  const taskUrls = Array.isArray(dialogVm?.taskAddUrls)
+    ? dialogVm.taskAddUrls.map((url: any) => String(url))
+    : [];
+  const hasBtFlag =
+    typeof dialogVm?.isBtSingletask === 'boolean' || typeof dialogVm?.isBatchTask === 'boolean';
+  const inputLooksBt = links.some(
+    (link) => /^magnet:/i.test(link) || /\.torrent(?:$|[?#])/i.test(link),
+  );
+  const looksBt = hasBtFlag
+    ? Boolean(dialogVm.isBtSingletask || dialogVm.isBatchTask)
+    : inputLooksBt;
+  const knownNonBt = hasBtFlag
+    ? !looksBt
+    : links.length > 0 &&
+      !inputLooksBt &&
+      !links.some((link) => /^thunder:/i.test(link));
+
+  let treeRoot = dialog.querySelector(selectors.fileTree) as HTMLElement | null;
+  const treeWaitTicks = knownNonBt ? 12 : 32;
+  for (let i = 0; !treeRoot && i < treeWaitTicks; i++) {
+    await sleep(250);
+    dialog = findDialog() ?? dialog;
+    treeRoot = dialog.querySelector(selectors.fileTree) as HTMLElement | null;
+  }
+  if (!treeRoot) {
+    // 只有确认是非 BT 任务才按直链跳过；BT/未知一律暂停，避免把慢种子当直链全下
+    if (!knownNonBt) {
+      return {
+        ok: false,
+        message: '文件树尚未就绪，请稍后重试',
+        debug: debug() + `;tree=0;looksBt=${looksBt ? 1 : 0};knownNonBt=0`,
+      };
+    }
+    return {
+      ok: true,
+      snapshot: {
+        kind: 'single',
+        treeHash: '',
+        groups: [],
+        checkedIds: [],
+        buttonDisabled: isButtonDisabled(findDownloadButton(dialog)),
+        truncated: false,
+      },
+      debug: debug() + ';tree=0;kind=single',
+    };
+  }
+  debugParts.push('tree=1');
+
+  const MAX_LEAVES = 5000;
+  let btVm: any = null;
+  let parentVm: any = null;
+  let treeData: any[] = [];
+
+  const discover = (): boolean => {
+    btVm = null;
+    parentVm = null;
+    treeData = [];
+    dialog = findDialog() ?? dialog;
+    treeRoot = dialog?.querySelector(selectors.fileTree) as HTMLElement | null;
+    if (!treeRoot) return false;
+    const treeEl = (treeRoot.querySelector('.el-tree') ?? dialog?.querySelector('.el-tree')) as any;
+    if (!treeEl) return false;
+    let inst = treeEl.__vueParentComponent;
+    for (let depth = 0; inst && depth < 16; depth++) {
+      const vm = inst.proxy || inst.ctx || inst;
+      if (
+        vm &&
+        !btVm &&
+        typeof vm.setCheckedKeys === 'function' &&
+        typeof vm.getCheckedKeys === 'function'
+      ) {
+        btVm = vm;
+      }
+      if (
+        btVm &&
+        vm &&
+        vm !== btVm &&
+        Array.isArray(vm.treeData) &&
+        (typeof vm.handelBtSelectChange === 'function' || Array.isArray(vm.flatNodeList))
+      ) {
+        parentVm = vm;
+        treeData = vm.treeData;
+        break;
+      }
+      inst = inst.parent;
+    }
+    return Boolean(btVm && parentVm && treeData.length > 0);
+  };
+
+  let ready = false;
+  for (let i = 0; i < 20; i++) {
+    if (discover()) {
+      ready = true;
+      break;
+    }
+    await sleep(250);
+  }
+  if (!btVm || !parentVm) {
+    return {
+      ok: false,
+      message: '无法读取迅雷文件树组件，迅雷页面可能已更新',
+      debug: debug() + ';component=0',
+    };
+  }
+  debugParts.push('component=1');
+  if (!ready || !treeData.length) {
+    return {
+      ok: false,
+      message: '迅雷文件树为空，解析可能尚未完成',
+      debug: debug() + ';roots=0',
+    };
+  }
+
+  const groups: SnapshotGroup[] = [];
+  let leafCount = 0;
+  let truncated = false;
+  let missingId = false;
+
+  for (let index = 0; index < treeData.length; index++) {
+    if (truncated) break;
+    const root = treeData[index];
+    if (!root || typeof root !== 'object') continue;
+    const rootId = root.id == null ? '' : String(root.id);
+    if (!rootId) missingId = true;
+    const rootName = String(root.label || root.name || '');
+    const files: SnapshotFile[] = [];
+
+    const walk = (node: any, ancestors: string[]): void => {
+      if (truncated || !node || typeof node !== 'object') return;
+      const name = String(node.label || node.name || '');
+      // 根节点是任务名，不拼进文件 path，否则根名里的番号会让所有文件恒命中
+      const parts =
+        node === root && node.is_dir ? ancestors : name ? [...ancestors, name] : ancestors;
+      if (!node.is_dir && name) {
+        leafCount += 1;
+        if (leafCount > MAX_LEAVES) {
+          truncated = true;
+          return;
+        }
+        const id = node.id == null ? '' : String(node.id);
+        if (!id) missingId = true;
+        files.push({
+          id,
+          name,
+          path: parts.join('/'),
+          size: Number(node.file_size) || 0,
+        });
+      }
+      const children = Array.isArray(node.children) ? node.children : [];
+      for (const child of children) {
+        if (truncated) break;
+        walk(child, parts);
+      }
+    };
+    walk(root, []);
+    groups.push({ rootId: rootId || `root-${index}`, rootName, files });
+  }
+
+  if (missingId) {
+    return {
+      ok: false,
+      message: '文件节点缺少 id，无法安全勾选',
+      debug: debug() + ';missingId=1',
+    };
+  }
+
+  const buttonDisabled = isButtonDisabled(findDownloadButton(dialog));
+  if (truncated) {
+    return {
+      ok: true,
+      snapshot: {
+        kind: 'bt',
+        treeHash: '',
+        groups: [],
+        checkedIds: [],
+        buttonDisabled,
+        truncated: true,
+      },
+      debug: debug() + `;leaves>${MAX_LEAVES}`,
+    };
+  }
+
+  const leafIds = new Set<string>();
+  for (const group of groups) {
+    for (const file of group.files) leafIds.add(file.id);
+  }
+  let checkedIds: string[] = [];
+  try {
+    const keys = btVm.getCheckedKeys?.();
+    if (Array.isArray(keys)) {
+      checkedIds = keys
+        .map((key: any) => String(key))
+        .filter((id: string) => leafIds.has(id));
+    }
+    if (!checkedIds.length && typeof btVm.getChecked === 'function') {
+      checkedIds = (btVm.getChecked() || [])
+        .filter((node: any) => node && !node.is_dir)
+        .map((node: any) => String(node.id))
+        .filter((id: string) => leafIds.has(id));
+    }
+  } catch {
+    /* 读取勾选失败不影响快照 */
+  }
+
+  const signature = groups
+    .map((group) => `${group.rootId}|${group.files.map((file) => file.id).join(',')}`)
+    .join(';');
+  const treeHash = hash(`${signature}|${[...checkedIds].sort().join(',')}`);
+
+  return {
+    ok: true,
+    snapshot: {
+      kind: 'bt',
+      treeHash,
+      groups,
+      checkedIds,
+      buttonDisabled,
+      truncated: false,
+    },
+    debug: debug() + `;roots=${groups.length};leaves=${leafIds.size}`,
+  };
+}
+
+/**
+ * 注入页面应用勾选计划（自包含，勿引用外部作用域）。
+ * 只在树 hash 与读取时一致时修改；修改后校验父组件计数与按钮状态。
+ */
+async function injectedApplyFileSelection(
+  selectors: typeof XUNLEI_SELECTORS,
+  plan: ApplySelectionPlan,
+): Promise<ApplySelectionResult> {
+  const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+  const isVisible = (el: Element | null): boolean => {
+    if (!el) return false;
+    const node = el as HTMLElement;
+    return node.offsetParent !== null || node.getBoundingClientRect().width > 0;
+  };
+  const findDialog = (): HTMLElement | null => {
+    const nodes = Array.from(document.querySelectorAll(selectors.taskDialog)) as HTMLElement[];
+    if (!nodes.length) return null;
+    const visible = nodes.filter(isVisible);
+    return visible[visible.length - 1] ?? null;
+  };
+  const findDownloadButton = (dialog: HTMLElement): HTMLButtonElement | null => {
+    const buttons = Array.from(
+      dialog.querySelectorAll(selectors.parseButton),
+    ) as HTMLButtonElement[];
+    return (
+      buttons.find((button) => (button.textContent || '').includes('立即下载')) ??
+      buttons[buttons.length - 1] ??
+      null
+    );
+  };
+  const isButtonDisabled = (button: HTMLButtonElement | null): boolean => {
+    if (!button) return true;
+    return (
+      Boolean(button.disabled) ||
+      button.getAttribute('aria-disabled') === 'true' ||
+      button.classList.contains('is-disabled') ||
+      button.classList.contains('disabled')
+    );
+  };
+  const hash = (text: string): string => {
+    let value = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      value ^= text.charCodeAt(i);
+      value = Math.imul(value, 16777619);
+    }
+    return (value >>> 0).toString(36);
+  };
+
+  let dialog = findDialog();
+  if (!dialog) return { ok: false, message: '未找到迅雷解析弹窗', attempted: false };
+
+  let btVm: any = null;
+  let parentVm: any = null;
+  let treeData: any[] = [];
+
+  const discover = (): boolean => {
+    btVm = null;
+    parentVm = null;
+    treeData = [];
+    dialog = findDialog() ?? dialog;
+    const treeRoot = dialog?.querySelector(selectors.fileTree) as HTMLElement | null;
+    if (!treeRoot) return false;
+    const treeEl = (treeRoot.querySelector('.el-tree') ?? dialog?.querySelector('.el-tree')) as any;
+    if (!treeEl) return false;
+    let inst = treeEl.__vueParentComponent;
+    for (let depth = 0; inst && depth < 16; depth++) {
+      const vm = inst.proxy || inst.ctx || inst;
+      if (
+        vm &&
+        !btVm &&
+        typeof vm.setCheckedKeys === 'function' &&
+        typeof vm.getCheckedKeys === 'function'
+      ) {
+        btVm = vm;
+      }
+      if (
+        btVm &&
+        vm &&
+        vm !== btVm &&
+        Array.isArray(vm.treeData) &&
+        (typeof vm.handelBtSelectChange === 'function' || Array.isArray(vm.flatNodeList))
+      ) {
+        parentVm = vm;
+        treeData = vm.treeData;
+        break;
+      }
+      inst = inst.parent;
+    }
+    return Boolean(btVm && parentVm && treeData.length > 0);
+  };
+
+  let ready = false;
+  for (let i = 0; i < 8; i++) {
+    if (discover()) {
+      ready = true;
+      break;
+    }
+    await sleep(100);
+  }
+  if (!ready || !btVm || !parentVm || !treeData.length) {
+    return { ok: false, message: '无法读取迅雷文件树组件', attempted: false };
+  }
+
+  const groups: Array<{ rootId: string; files: string[] }> = [];
+  const leafIds = new Set<string>();
+  const leafRoot = new Map<string, string>();
+  const idByString = new Map<string, any>();
+
+  for (let index = 0; index < treeData.length; index++) {
+    const root = treeData[index];
+    if (!root || typeof root !== 'object') continue;
+    const rootId = root.id == null ? `root-${index}` : String(root.id);
+    const ids: string[] = [];
+    const walk = (node: any): void => {
+      if (!node || typeof node !== 'object') return;
+      if (!node.is_dir && node.id != null) {
+        const id = String(node.id);
+        ids.push(id);
+        leafIds.add(id);
+        leafRoot.set(id, rootId);
+        idByString.set(id, node.id);
+      }
+      const children = Array.isArray(node.children) ? node.children : [];
+      for (const child of children) walk(child);
+    };
+    walk(root);
+    groups.push({ rootId, files: ids });
+  }
+
+  const readCheckedIds = (): string[] => {
+    try {
+      const keys = btVm.getCheckedKeys?.();
+      if (Array.isArray(keys)) {
+        const ids = keys.map((key: any) => String(key)).filter((id: string) => leafIds.has(id));
+        if (ids.length) return ids;
+      }
+      return (btVm.getChecked() || [])
+        .filter((node: any) => node && !node.is_dir)
+        .map((node: any) => String(node.id))
+        .filter((id: string) => leafIds.has(id));
+    } catch {
+      return [];
+    }
+  };
+
+  const currentChecked = readCheckedIds();
+  const signature = groups
+    .map((group) => `${group.rootId}|${group.files.join(',')}`)
+    .join(';');
+  const currentHash = hash(`${signature}|${[...currentChecked].sort().join(',')}`);
+  if (currentHash !== plan.treeHash) {
+    return {
+      ok: false,
+      attempted: false,
+      stale: true,
+      message: '文件树在匹配期间发生变化，请重试',
+      debug: `hash ${currentHash} != ${plan.treeHash}`,
+    };
+  }
+
+  const missingSelected = plan.selectedIds.filter((id) => !leafIds.has(id));
+  if (missingSelected.length) {
+    return {
+      ok: false,
+      attempted: false,
+      stale: true,
+      message: `有 ${missingSelected.length} 个文件已不存在`,
+      debug: 'missingSelected=1',
+    };
+  }
+
+  const preserve = new Set(plan.preserveRootIds);
+  const finalIds = new Set(plan.selectedIds);
+  for (const id of currentChecked) {
+    const rootId = leafRoot.get(id);
+    if (rootId && preserve.has(rootId)) finalIds.add(id);
+  }
+
+  // 传回原始 id 类型，避免数字 id 被字符串化后 setCheckedKeys 命中不到
+  const finalKeys = [...finalIds].map((id) => idByString.get(id) ?? id);
+  btVm.setCheckedKeys(finalKeys);
+  await sleep(30);
+
+  const checkedNodes: any[] = (btVm.getChecked() || []).filter(
+    (node: any) => node && !node.is_dir,
+  );
+  const checkedIds: string[] = checkedNodes.map((node: any) => String(node.id));
+  const checkedSet = new Set(checkedIds);
+  const missing = [...finalIds].filter((id) => !checkedSet.has(id));
+  const extra = checkedIds.filter((id) => !finalIds.has(id));
+  const applied = missing.length === 0 && extra.length === 0;
+
+  const readParentIds = (): Set<string> | null => {
+    const collect = (list: any): Set<string> | null => {
+      if (!Array.isArray(list)) return null;
+      return new Set(
+        list
+          .filter((node: any) => node && !node.is_dir && node.id != null)
+          .map((node: any) => String(node.id)),
+      );
+    };
+    const fromResource = collect(parentVm.computedCheckedResource);
+    if (fromResource) return fromResource;
+    return collect(parentVm.checkedSource);
+  };
+  const sameIdSet = (a: Set<string>, b: Set<string>): boolean =>
+    a.size === b.size && [...a].every((id) => b.has(id));
+
+  let parentIds = readParentIds();
+  let parentSynced = parentIds ? sameIdSet(parentIds, checkedSet) : false;
+  if (!parentSynced && typeof parentVm.handelBtSelectChange === 'function') {
+    try {
+      parentVm.handelBtSelectChange(btVm.getChecked());
+      await sleep(30);
+      parentIds = readParentIds();
+      parentSynced = parentIds ? sameIdSet(parentIds, checkedSet) : false;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const buttonDisabled = isButtonDisabled(findDownloadButton(dialog));
+  return {
+    ok: applied && parentSynced,
+    attempted: true,
+    applied,
+    parentSynced,
+    buttonDisabled,
+    checkedCount: checkedSet.size,
+    stale: false,
+    message: applied && parentSynced ? '文件勾选已应用' : '文件勾选未能完全同步',
+    debug: `selected=${finalIds.size};checked=${checkedSet.size};parent=${
+      parentIds ? parentIds.size : 'unknown'
+    }`,
   };
 }
 
@@ -595,6 +1515,26 @@ async function injectedRunStep(
         throw new StepError('parse-timeout', '等待解析结果超时');
       }
       await new Promise((r) => window.setTimeout(r, 200));
+    }
+  }
+
+  function isVisibleElement(el: Element | null): boolean {
+    if (!el) return false;
+    const node = el as HTMLElement;
+    return node.offsetParent !== null || node.getBoundingClientRect().width > 0;
+  }
+
+  // 读取/应用与点击必须指向同一个可见结果弹窗，避免隐藏的旧弹窗抢到点击
+  async function waitVisibleDialog(): Promise<HTMLElement> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const dialogs = Array.from(document.querySelectorAll(selectors.taskDialog)) as HTMLElement[];
+      const visible = dialogs.filter(isVisibleElement);
+      if (visible.length) return visible[visible.length - 1];
+      if (Date.now() > deadline) {
+        throw new StepError('parse-timeout', '等待解析结果超时');
+      }
+      await new Promise((r) => window.setTimeout(r, 100));
     }
   }
 
@@ -846,7 +1786,7 @@ async function injectedRunStep(
       case 'confirm-download': {
         let dialog: HTMLElement;
         try {
-          dialog = await waitElement(selectors.taskDialog);
+          dialog = await waitVisibleDialog();
         } catch {
           throwIfLogin();
           throwIfParseError();
@@ -864,7 +1804,22 @@ async function injectedRunStep(
             throwIfParseError();
           },
         );
-        const pathApplied = await resolveDownloadPath(payload.downloadPath || '', true);
+        const disabled =
+          downloadButton.hasAttribute('disabled') ||
+          downloadButton.getAttribute('aria-disabled') === 'true' ||
+          downloadButton.classList.contains('is-disabled') ||
+          downloadButton.classList.contains('disabled');
+        if (disabled) {
+          throw new StepError(
+            'download-click-failed',
+            '「立即下载」按钮不可用，请打开迅雷页面检查文件选择或磁盘空间',
+          );
+        }
+        // 匹配流程已由 wait-dialog 应用过路径，点击时不要再改 Vuex，避免重置文件勾选
+        const pathApplied =
+          payload.skipPath === '1'
+            ? undefined
+            : await resolveDownloadPath(payload.downloadPath || '', true);
         downloadButton.click();
         await new Promise((r) => window.setTimeout(r, 800));
         const clickError = findErrorToast();
@@ -881,7 +1836,7 @@ async function injectedRunStep(
       case 'wait-dialog': {
         let dialog: HTMLElement;
         try {
-          dialog = await waitElement(selectors.taskDialog);
+          dialog = await waitVisibleDialog();
         } catch {
           throwIfLogin();
           throwIfParseError();

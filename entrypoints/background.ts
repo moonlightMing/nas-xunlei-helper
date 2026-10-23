@@ -5,6 +5,7 @@ import type {
   ExtensionMessage,
   ListDirResponse,
   OpenXunleiResponse,
+  ReadDialogFilesResponse,
   SendSource,
   TestConnectionResponse,
 } from '@/utils/messaging';
@@ -37,11 +38,12 @@ import {
   listXunleiDir,
   probeMessage,
   readTaskState,
+  readXunleiFileList,
   runSendFlow,
   type PageProbe,
   type SendOutcome,
 } from '@/utils/xunleiAutomation';
-import { focusXunleiTab, openXunleiTab } from '@/utils/xunleiTab';
+import { findXunleiTab, focusXunleiTab, openXunleiTab } from '@/utils/xunleiTab';
 
 const CONTEXT_MENU_ID = 'nas-xunlei-send';
 const LAST_SEND_KEY = 'nas_xunlei_last_send';
@@ -159,7 +161,46 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
     }
     return listDir(message.data.url, message.data.parentId, message.data.parentPath);
   }
+  if (message.type === 'avMatch') {
+    return readDialogFiles();
+  }
   return { ok: false, code: 'unknown', message: '未知消息类型' };
+}
+
+/** 选项页只读诊断：读取当前已打开迅雷页的解析文件树，不点击、不下载 */
+async function readDialogFiles(): Promise<ReadDialogFilesResponse> {
+  await ensureSettingsLoaded();
+  const settings = getSettings();
+  const urlError = validateXunleiUrl(settings.xunleiUrl);
+  if (urlError) {
+    return {
+      ok: false,
+      code: settings.xunleiUrl.trim() ? 'settings-invalid' : 'settings-missing',
+      message: urlError,
+    };
+  }
+
+  const tab = await findXunleiTab(settings.xunleiUrl);
+  if (!tab?.id) {
+    return {
+      ok: false,
+      message: '请先打开迅雷页面并解析一个磁力/种子，再读取文件列表',
+    };
+  }
+
+  const result = await readXunleiFileList(tab.id, [], false);
+  if (!result.ok || !result.snapshot) {
+    const message =
+      result.message === '文件树尚未就绪，请稍后重试'
+        ? '未读到 BT 文件树：请确认当前解析的是磁力/种子任务；直链任务不参与番号匹配'
+        : result.message || '读取迅雷文件列表失败';
+    return {
+      ok: false,
+      message,
+      debug: result.debug,
+    };
+  }
+  return { ok: true, snapshot: result.snapshot, debug: result.debug };
 }
 
 /** 发送链接到 NAS 迅雷：锁 → 解析/校验 → 历史 → 打开/复用迅雷页 → 预检 → 自动化 → 监控 → 通知 */
@@ -318,24 +359,33 @@ async function runSend(
     links,
     downloadPath: settings.downloadPath,
     mode: settings.downloadMode,
+    match: settings.avMatch,
   });
 
   const pathFallback = Boolean(
     outcome.ok && outcome.pathApplied?.needed && !outcome.pathApplied.applied,
   );
-  const status = !outcome.ok ? 'failed' : pathFallback ? 'partial' : 'ok';
+  const status = outcome.paused
+    ? 'paused'
+    : !outcome.ok
+      ? 'failed'
+      : pathFallback
+        ? 'partial'
+        : 'ok';
   await finishEntry(historyId, {
     status,
     stage: outcome.stage,
     code: outcome.code,
     message: outcome.message,
     pathApplied: outcome.pathApplied,
+    match: outcome.match,
   });
 
   if (options.notify) await showSendResult(outcome, settings, links);
 
   if (
     settings.monitorDownloads &&
+    !outcome.paused &&
     (outcome.ok || outcome.stage === 'confirm-download' || outcome.stage === 'wait-dialog')
   ) {
     void startMonitor({

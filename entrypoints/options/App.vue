@@ -15,6 +15,7 @@ import type {
   TestConnectionResponse,
 } from '@/utils/messaging';
 import type { DirItem } from '@/utils/xunleiAutomation';
+import AvMatchPanel from './components/AvMatchPanel.vue';
 import {
   DEFAULT_SETTINGS,
   DOWNLOAD_MODE_LABELS,
@@ -101,8 +102,11 @@ const handleSave = async () => {
   }
   saving.value = true;
   try {
+    // 番号匹配由独立 tab 保存，设置页保存时不要用旧内存值覆盖它
+    const baseSettings: Partial<XunleiSettings> = { ...form };
+    delete baseSettings.avMatch;
     await saveSettings({
-      ...form,
+      ...baseSettings,
       xunleiUrl: form.xunleiUrl.trim(),
       downloadPath: form.downloadPath.trim(),
     });
@@ -180,7 +184,7 @@ const handleReset = () => {
   Modal.confirm({
     title: '恢复默认设置？',
     content:
-      '将清空 NAS 迅雷地址、默认下载位置与通知/任务监控设置，并将下载模式重置为「立即下载」。发送记录不会被清除。',
+      '将清空 NAS 迅雷地址、默认下载位置、通知/任务监控设置以及番号匹配规则，并将下载模式重置为「立即下载」。发送记录不会被清除。',
     okText: '恢复默认',
     okType: 'danger',
     cancelText: '取消',
@@ -287,7 +291,7 @@ const handleHistoryRetry = async (item: SendHistoryEntry): Promise<void> => {
 
     if (!response) {
       message.error('后台无响应，请重试');
-    } else if (response.code === 'busy') {
+    } else if (response.code === 'busy' || response.paused) {
       message.warning(response.message);
     } else if (response.ok) {
       message.success(response.message);
@@ -333,9 +337,28 @@ function formatTime(at: number): string {
 
 function statusTag(item: SendHistoryEntry): { color: string; text: string } {
   if (item.status === 'running') return { color: 'blue', text: '发送中' };
+  if (item.status === 'paused') return { color: 'orange', text: '已暂停' };
   if (item.status === 'ok') return { color: 'green', text: '成功' };
   if (item.status === 'partial') return { color: 'orange', text: '路径未生效' };
   return { color: 'red', text: '失败' };
+}
+
+function matchText(item: SendHistoryEntry): string {
+  const match = item.match;
+  if (!match) return '';
+  const skipLabels: Record<string, string> = {
+    'too-many-files': '文件过多',
+    'empty-tree': '文件列表为空',
+    disabled: '未启用',
+  };
+  if (match.skipped === 'no-file-list') return '番号匹配：无 BT 文件列表，已跳过';
+  if (match.skipped) return `番号匹配：已跳过（${skipLabels[match.skipped] ?? match.skipped}）`;
+  const codeText = match.codes.length ? ` · ${match.codes.slice(0, 2).join('、')}` : '';
+  const base = `番号匹配：${match.matchedGroups}/${match.totalGroups} 个任务，番号勾选 ${match.selectedFiles}/${match.totalFiles} 个文件${codeText}`;
+  if (match.status === 'partial' || match.status === 'empty') {
+    return `${base}${match.policy === 'fallback' ? ' · 未匹配任务保留原勾选' : ' · 已暂停'}`;
+  }
+  return base;
 }
 
 function modeLabel(mode: SendHistoryEntry['mode']): string {
@@ -503,6 +526,10 @@ function monitorText(item: SendHistoryEntry): string {
             </a-form>
           </a-tab-pane>
 
+          <a-tab-pane key="avMatch" tab="番号匹配">
+            <AvMatchPanel :active="activeTab === 'avMatch'" />
+          </a-tab-pane>
+
           <a-tab-pane key="history" tab="发送记录">
             <div class="card-head">
               <p class="history-subtitle">最近 50 条，仅保存在本机；失败记录可一键重试。</p>
@@ -540,6 +567,7 @@ function monitorText(item: SendHistoryEntry): string {
                     </span>
                   </div>
                   <div class="history-message">{{ item.message }}</div>
+                  <div v-if="item.match" class="history-match">{{ matchText(item) }}</div>
                   <div v-if="item.monitor" class="history-monitor">{{ monitorText(item) }}</div>
                 </a-list-item>
               </template>
@@ -761,6 +789,12 @@ function monitorText(item: SendHistoryEntry): string {
   line-height: 1.6;
   color: rgba(0, 0, 0, 0.65);
   word-break: break-all;
+}
+
+.history-match {
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.55);
 }
 
 .history-monitor {

@@ -1,11 +1,18 @@
 /**
- * 扩展设置：NAS 迅雷地址、默认下载位置、下载模式。
+ * 扩展设置：NAS 迅雷地址、默认下载位置、下载模式、番号匹配规则。
  *
  * 存放于 chrome.storage.local 单 key（storage.local 而非 sync：NAS 地址是
  * 局域网设备相关配置，跨设备同步无意义）。读取为同步 getter（返回内存值），
  * 发送前调用 ensureSettingsLoaded() 确保已加载；options / popup / background
  * 之间的变更通过 watchSettingsStorage 互相感知。
  */
+
+import {
+  cloneAvMatchSettings,
+  DEFAULT_AV_MATCH_SETTINGS,
+  normalizeAvMatchSettings,
+  type AvMatchSettings,
+} from '@/utils/avMatch';
 
 export const SETTINGS_STORAGE_KEY = 'nas_xunlei_settings';
 
@@ -38,6 +45,8 @@ export interface XunleiSettings {
   notifyOnDownloadFailure: boolean;
   /** 下载任务完成时是否弹桌面通知 */
   notifyOnDownloadComplete: boolean;
+  /** 磁力/种子解析后的番号匹配规则 */
+  avMatch: AvMatchSettings;
 }
 
 export const DEFAULT_SETTINGS: XunleiSettings = {
@@ -51,6 +60,7 @@ export const DEFAULT_SETTINGS: XunleiSettings = {
   monitorDownloads: true,
   notifyOnDownloadFailure: true,
   notifyOnDownloadComplete: false,
+  avMatch: cloneAvMatchSettings(DEFAULT_AV_MATCH_SETTINGS),
 };
 
 function booleanOrDefault(value: unknown, fallback: boolean): boolean {
@@ -109,6 +119,7 @@ function normalizeSettings(raw: unknown): XunleiSettings {
       input.notifyOnDownloadComplete,
       DEFAULT_SETTINGS.notifyOnDownloadComplete,
     ),
+    avMatch: normalizeAvMatchSettings(input.avMatch),
   };
 }
 
@@ -161,6 +172,14 @@ export async function saveSettings(next: Partial<XunleiSettings>): Promise<Xunle
   }
   loadPromise = Promise.resolve(current);
   return current;
+}
+
+/** 保存番号匹配设置（在当前 avMatch 上合并，避免浅合并丢字段） */
+export async function saveAvMatchSettings(
+  next: Partial<AvMatchSettings>,
+): Promise<XunleiSettings> {
+  const current = await ensureSettingsLoaded();
+  return saveSettings({ avMatch: { ...current.avMatch, ...next } });
 }
 
 /** 恢复默认设置 */

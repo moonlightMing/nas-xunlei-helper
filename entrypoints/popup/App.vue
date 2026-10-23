@@ -14,8 +14,11 @@ const result = ref<SendLinksResponse | null>(null);
 
 const parsed = computed(() => parseLinks(linksText.value));
 const linkCount = computed(() => parsed.value.links.length);
+const paused = computed(() => Boolean(result.value?.paused));
 const resultMeta = computed(() =>
-  result.value && !result.value.ok ? getSendErrorMeta(result.value.code) : null,
+  result.value && (!result.value.ok || paused.value)
+    ? getSendErrorMeta(result.value.code)
+    : null,
 );
 const pathFallback = computed(() =>
   Boolean(
@@ -24,10 +27,20 @@ const pathFallback = computed(() =>
       !result.value.pathApplied.applied,
   ),
 );
+const matchWarning = computed(() => {
+  const match = result.value?.match;
+  return Boolean(
+    result.value?.ok &&
+      !paused.value &&
+      match &&
+      (match.status === 'partial' || match.status === 'empty'),
+  );
+});
 const resultType = computed(() => {
   if (!result.value) return 'info';
+  if (paused.value) return 'warning';
   if (!result.value.ok) return 'error';
-  return pathFallback.value ? 'warning' : 'success';
+  return pathFallback.value || matchWarning.value ? 'warning' : 'success';
 });
 const primaryAction = computed(() => resultMeta.value?.primary ?? null);
 const primaryLabel = computed(() => (primaryAction.value === 'open-options' ? '打开设置' : '打开迅雷'));
@@ -183,18 +196,18 @@ const handlePrimaryAction = () => {
       aria-live="polite"
     >
       <template #message>{{ result.message }}</template>
-      <template v-if="!result.ok && resultMeta?.hint" #description>
+      <template v-if="resultMeta?.hint && (!result.ok || paused)" #description>
         {{ resultMeta.hint }}
       </template>
     </a-alert>
 
     <div
-      v-if="result && (pathFallback || (!result.ok && (primaryAction || canRetry)))"
+      v-if="result && (paused || matchWarning || pathFallback || (!result.ok && (primaryAction || canRetry)))"
       class="result-actions"
     >
-      <template v-if="pathFallback">
-        <a-button size="small" @click="handleOpenSettings">打开设置</a-button>
+      <template v-if="paused || matchWarning || pathFallback">
         <a-button size="small" @click="handleOpenXunlei">打开迅雷</a-button>
+        <a-button size="small" @click="handleOpenSettings">打开设置</a-button>
       </template>
       <template v-else>
         <a-button v-if="primaryAction" size="small" @click="handlePrimaryAction">

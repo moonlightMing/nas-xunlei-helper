@@ -1,3 +1,4 @@
+import type { FileListSnapshot } from '@/utils/avMatch';
 import type { SendErrorCode } from '@/utils/sendErrors';
 import type { DirItem, SendOutcome } from '@/utils/xunleiAutomation';
 
@@ -57,8 +58,22 @@ export interface ListDirResponse {
   message?: string;
 }
 
+export interface ReadDialogFilesMessage {
+  type: 'avMatch';
+  action: 'readDialogFiles';
+}
+
+export interface ReadDialogFilesResponse {
+  ok: boolean;
+  snapshot?: FileListSnapshot;
+  code?: SendErrorCode;
+  message?: string;
+  debug?: string;
+}
+
 export type ExtensionMessage =
   | SendLinksMessage
   | OpenXunleiMessage
   | TestConnectionMessage
-  | ListDirMessage;
+  | ListDirMessage
+  | ReadDialogFilesMessage;

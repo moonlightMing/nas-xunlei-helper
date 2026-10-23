@@ -1,3 +1,4 @@
+import type { MatchSummary } from '@/utils/avMatch';
 import type { DownloadMode } from '@/utils/settings';
 import type { SendErrorCode } from '@/utils/sendErrors';
 import type { SendSource } from '@/utils/messaging';
@@ -25,11 +26,12 @@ export interface SendHistoryEntry {
   linkCount: number;
   mode: DownloadMode;
   path: string;
-  status: 'running' | 'ok' | 'failed' | 'partial';
+  status: 'running' | 'ok' | 'failed' | 'paused' | 'partial';
   stage: SendOutcome['stage'];
   code?: SendErrorCode;
   message: string;
   pathApplied?: PathApplied;
+  match?: MatchSummary;
   monitor?: HistoryMonitorSummary;
 }
 

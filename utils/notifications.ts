@@ -95,6 +95,26 @@ export async function showSendResult(
   links: string[],
 ): Promise<void> {
   const meta = getSendErrorMeta(outcome.code);
+  if (outcome.paused) {
+    if (!settings.notifyOnSendFailure) {
+      await clearSendResult();
+      return;
+    }
+    await saveActionState({
+      id: NOTIFICATION_IDS.sendResult,
+      actions: ['open-xunlei', 'open-options'],
+      defaultAction: 'open-xunlei',
+      at: Date.now(),
+    });
+    await show(NOTIFICATION_IDS.sendResult, {
+      title: 'NAS 迅雷 · 已暂停',
+      message: trimMessage(`${outcome.message} ${meta.hint}`),
+      buttons: [{ title: '打开迅雷' }, { title: '打开设置' }],
+      requireInteraction: true,
+      priority: 2,
+    });
+    return;
+  }
   if (!outcome.ok) {
     if (!meta.notify || !settings.notifyOnSendFailure) {
       await clearSendResult();
