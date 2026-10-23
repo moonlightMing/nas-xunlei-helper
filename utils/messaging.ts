@@ -1,13 +1,14 @@
 import type { FileListSnapshot } from '@/utils/avMatch';
 import type { SendErrorCode } from '@/utils/sendErrors';
 import type { DirItem, SendOutcome } from '@/utils/xunleiAutomation';
+import type { XunleiPhase } from '@/utils/xunleiApi';
 
 export type SendSource = 'popup' | 'context-menu' | 'retry' | 'history';
 
 export interface SendLinksMessage {
   type: 'download';
   action: 'sendLinks';
-  data: { links: string[]; source?: SendSource };
+  data: { links: string[]; source?: SendSource; /** 忽略重复资源防呆，强制重发 */ force?: boolean };
 }
 
 export type SendLinksResponse = SendOutcome;
@@ -71,9 +72,65 @@ export interface ReadDialogFilesResponse {
   debug?: string;
 }
 
+/** popup 任务页用的精简视图（避免把整个 drive#task 塞进消息） */
+export interface TaskSummary {
+  id: string;
+  name: string;
+  type: string;
+  phase: XunleiPhase;
+  /** 0-100 */
+  progress: number;
+  /** 字节/秒 */
+  speed: number;
+  /** 任务总大小，字节 */
+  totalSize: number;
+  /** 已勾选/已下载字节 */
+  checkedSize: number;
+  /** NAS 上的实际路径 */
+  realPath: string;
+  message: string;
+  updatedAt: string;
+}
+
+export interface ListTasksMessage {
+  type: 'tasks';
+  action: 'list';
+  data?: { tab?: 'ing' | 'done'; limit?: number };
+}
+
+export interface ListTasksResponse {
+  ok: boolean;
+  tasks: TaskSummary[];
+  /** 服务端建议的下次刷新秒数 */
+  expiresIn?: number;
+  code?: SendErrorCode;
+  message?: string;
+}
+
+export interface OperateTaskMessage {
+  type: 'tasks';
+  action: 'operate';
+  data: { id: string; phase: XunleiPhase };
+}
+
+export interface DeleteTasksMessage {
+  type: 'tasks';
+  action: 'delete';
+  data: { ids: string[] };
+}
+
+export interface TaskActionResponse {
+  ok: boolean;
+  code?: SendErrorCode;
+  message?: string;
+}
+
 export type ExtensionMessage =
   | SendLinksMessage
   | OpenXunleiMessage
   | TestConnectionMessage
   | ListDirMessage
-  | ReadDialogFilesMessage;
+  | ReadDialogFilesMessage
+  | ListTasksMessage
+  | OperateTaskMessage
+  | DeleteTasksMessage;

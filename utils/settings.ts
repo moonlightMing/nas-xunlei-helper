@@ -24,6 +24,18 @@ export const DOWNLOAD_MODE_LABELS: Record<DownloadMode, string> = {
   confirm: '确认后下载',
 };
 
+/**
+ * 发送通道：
+ * - dom = 打开迅雷页模拟点击新建任务面板（原型实现，兼容性最好）
+ * - api = 直接调用套件 drive/v1 接口（不打开页面、不抢焦点）
+ */
+export type SendMode = 'dom' | 'api';
+
+export const SEND_MODE_LABELS: Record<SendMode, string> = {
+  dom: '页面自动化（兼容优先）',
+  api: '接口直连（不跳转）',
+};
+
 export interface XunleiSettings {
   /** NAS 迅雷 Web 地址（含 #/home），如 http://192.168.5.2:2345/webman/3rdparty/pan-xunlei-com/index.cgi/#/home */
   xunleiUrl: string;
@@ -31,6 +43,8 @@ export interface XunleiSettings {
   downloadPath: string;
   /** 下载模式 */
   downloadMode: DownloadMode;
+  /** 发送通道：页面自动化 / 接口直连 */
+  sendMode: SendMode;
   /** 复用迅雷页发送前是否刷新（关闭可减少对当前页面的打断） */
   reloadBeforeSend: boolean;
   /** 发送成功后是否弹桌面通知 */
@@ -53,6 +67,7 @@ export const DEFAULT_SETTINGS: XunleiSettings = {
   xunleiUrl: '',
   downloadPath: '',
   downloadMode: 'immediate',
+  sendMode: 'dom',
   reloadBeforeSend: true,
   notifyOnSendSuccess: false,
   notifyOnSendFailure: true,
@@ -97,6 +112,7 @@ function normalizeSettings(raw: unknown): XunleiSettings {
     downloadPath:
       typeof input.downloadPath === 'string' ? input.downloadPath.trim() : DEFAULT_SETTINGS.downloadPath,
     downloadMode: input.downloadMode === 'confirm' ? 'confirm' : 'immediate',
+    sendMode: input.sendMode === 'api' ? 'api' : 'dom',
     reloadBeforeSend: booleanOrDefault(input.reloadBeforeSend, DEFAULT_SETTINGS.reloadBeforeSend),
     notifyOnSendSuccess: booleanOrDefault(
       input.notifyOnSendSuccess,

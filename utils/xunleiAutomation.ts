@@ -89,8 +89,8 @@ export interface SendOutcome {
   pathApplied?: PathApplied;
   /** 立即下载点击后读到的任务 id，用于任务监控初始候选 */
   taskIds?: string[];
-  /** 严格模式/文件列表异常时暂停，不点击立即下载 */
-  paused?: { reason: 'unmatched' | 'file-list-timeout' };
+  /** 严格模式/文件列表异常时暂停，不点击立即下载；duplicate 为接口模式重复资源防呆 */
+  paused?: { reason: 'unmatched' | 'file-list-timeout' | 'duplicate' };
   /** 番号匹配摘要（只含计数，不含完整文件列表） */
   match?: MatchSummary;
 }

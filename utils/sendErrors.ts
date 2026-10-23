@@ -19,6 +19,7 @@ export type SendErrorCode =
   | 'av-unmatched'
   | 'av-file-list-timeout'
   | 'av-selection-failed'
+  | 'duplicate-task'
   | 'busy'
   | 'unknown';
 
@@ -137,7 +138,7 @@ export const SEND_ERROR_META: Record<SendErrorCode, SendErrorMeta> = {
     severity: 'error',
   },
   'av-unmatched': {
-    hint: '请打开迅雷页面手动检查文件勾选，或调整番号匹配规则',
+    hint: '请调整番号匹配规则（番号/类型/大小/关键词），或改用页面自动化模式在迅雷弹窗里手动勾选',
     primary: 'open-xunlei',
     retryable: false,
     notify: true,
@@ -156,6 +157,13 @@ export const SEND_ERROR_META: Record<SendErrorCode, SendErrorMeta> = {
     retryable: false,
     notify: true,
     severity: 'error',
+  },
+  'duplicate-task': {
+    hint: 'NAS 上已有同一资源的下载任务，重复发送会顶掉原任务记录（已下载文件不受影响）。确认要重发请点「仍然发送」。',
+    primary: 'open-xunlei',
+    retryable: false,
+    notify: true,
+    severity: 'warning',
   },
   busy: {
     hint: '请等待当前发送完成',

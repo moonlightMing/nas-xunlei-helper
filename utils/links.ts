@@ -83,3 +83,44 @@ export function parseLinks(raw: string, max = MAX_LINKS): ParsedLinks {
 export function extractLinks(raw: string, max = MAX_LINKS): string[] {
   return parseLinks(raw, max).links;
 }
+
+/** 解开 thunder:// 外壳，返回内部真实链接；结构不符时返回空串 */
+export function decodeThunderLink(link: string): string {
+  const payload = link.slice('thunder://'.length).replace(/=+$/, '');
+  if (!payload) return '';
+  try {
+    const padded = payload + '='.repeat((4 - (payload.length % 4)) % 4);
+    const decoded = atob(padded);
+    return decoded.startsWith('AA') && decoded.endsWith('ZZ') ? decoded.slice(2, -2) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 提取资源身份标识，用于识别"同一资源重复发送"。
+ * 迅雷对同 infohash 重新添加会顶掉旧任务记录，所以键必须与大小写、
+ * 以及 magnet / thunder:// 外壳写法无关。无法识别时返回空串（不做拦截）。
+ */
+export function extractResourceKey(link: string): string {
+  const value = trimLink(link);
+  const lower = value.toLowerCase();
+  if (lower.startsWith('thunder://')) return extractResourceKey(decodeThunderLink(value));
+  if (lower.startsWith('magnet:?')) {
+    // 磁力写法是 xt=urn:btih:<hash>（冒号），少数站点会写成 btih=，两者都要认
+    const btih = /btih[:=]([0-9a-fA-F]{40}|[A-Za-z2-7]{32})(?:&|$)/i.exec(value);
+    return btih ? btih[1].toUpperCase() : '';
+  }
+  if (lower.startsWith('ed2k://')) {
+    // ed2k://|file|名称|大小|哈希|/
+    const hash = value.split('|')[4];
+    return hash ? hash.toUpperCase() : '';
+  }
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}

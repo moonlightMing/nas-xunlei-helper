@@ -1155,3 +1155,71 @@ export function formatFileSize(size: number): string {
   const digits = value >= 10 || unit === 0 ? 0 : 2;
   return `${value.toFixed(digits)} ${units[unit]}`;
 }
+
+/**
+ * 文件序号数组 → 迅雷 sub_file_index 串：连续段折叠成 "a-b"，单点写 "n"，逗号连接。
+ * 与套件前端 convertSubFileIndexToString 行为一致（实测单文件命中得到 "0"）。
+ */
+export function encodeSubFileIndex(indices: number[]): string {
+  const sorted = [...new Set(indices.filter((i) => Number.isFinite(i) && i >= 0))].sort(
+    (a, b) => a - b,
+  );
+  if (!sorted.length) return '';
+  const runs: string[] = [];
+  let start = 0;
+  let length = 0;
+  const flush = () => {
+    runs.push(length === 1 ? `${sorted[start]}` : `${sorted[start]}-${sorted[start] + length - 1}`);
+  };
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (sorted[start] + length !== sorted[i]) {
+      flush();
+      length = 0;
+      start = i;
+    }
+    length += 1;
+  }
+  flush();
+  return runs.join(',');
+}
+
+/** 接口模式落地用的单任务勾选结果 */
+export interface SubFileSelection {
+  /** 迅雷 sub_file_index；整包时为空串 */
+  subFileIndex: string;
+  /** 本次要下载的文件总大小 */
+  fileSize: number;
+  /** 严格模式未命中：不建任务 */
+  skippedUnmatched: boolean;
+}
+
+/**
+ * 把一个匹配分组的 selectedIds 映射回迅雷文件序号并编码。
+ * 编码为空视为未命中：严格模式暂停、回退模式整包，
+ * 绝不把"空选择"当成整包静默下发。
+ */
+export function selectSubFiles(
+  group: Pick<MatchGroupResult, 'selectedIds'>,
+  files: Array<{ id: string; fileIndex: number; size: number }>,
+  rootFileSize: number,
+  policy: MatchPlan['policy'] = 'strict',
+): SubFileSelection {
+  const indexById = new Map(files.map((file) => [file.id, file.fileIndex]));
+  const indices = group.selectedIds
+    .map((id) => indexById.get(id))
+    .filter((value): value is number => typeof value === 'number');
+  const subFileIndex = encodeSubFileIndex(indices);
+  if (!subFileIndex) {
+    return policy === 'strict'
+      ? { subFileIndex: '', fileSize: 0, skippedUnmatched: true }
+      : { subFileIndex: '', fileSize: rootFileSize, skippedUnmatched: false };
+  }
+  const selected = new Set(indices);
+  return {
+    subFileIndex,
+    fileSize: files
+      .filter((file) => selected.has(file.fileIndex))
+      .reduce((sum, file) => sum + file.size, 0),
+    skippedUnmatched: false,
+  };
+}

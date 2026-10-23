@@ -23,6 +23,7 @@ import {
   getSettings,
   resetSettings,
   saveSettings,
+  SEND_MODE_LABELS,
   validateDownloadPath,
   validateXunleiUrl,
   type XunleiSettings,
@@ -427,14 +428,37 @@ function monitorText(item: SendHistoryEntry): string {
               </a-form-item>
 
               <a-form-item>
+                <template #label><span class="label">发送通道</span></template>
+                <a-radio-group v-model:value="form.sendMode">
+                  <a-radio-button value="dom">{{ SEND_MODE_LABELS.dom }}</a-radio-button>
+                  <a-radio-button value="api">{{ SEND_MODE_LABELS.api }}</a-radio-button>
+                </a-radio-group>
+                <template #extra>
+                  <span class="extra">
+                    <template v-if="form.sendMode === 'api'">
+                      直接调用迅雷套件的 drive/v1 接口建任务：不打开迅雷页面、不抢焦点、不模拟点击。
+                      磁力/种子会先解析文件树再按番号规则勾选，勾选结果作为接口参数下发；严格模式下未命中的任务单独暂停，
+                      不会连累同一批里的其它链接。鉴权用套件首页下发的短期令牌，插件不保存账号密码。
+                    </template>
+                    <template v-else>
+                      打开迅雷页面并模拟「新建任务 → 填链接 → 解析 → 立即下载」，兼容性最好，支持番号匹配与确认后再下载。
+                    </template>
+                  </span>
+                </template>
+              </a-form-item>
+
+              <a-form-item>
                 <template #label><span class="label">下载模式</span></template>
-                <a-radio-group v-model:value="form.downloadMode">
+                <a-radio-group v-model:value="form.downloadMode" :disabled="form.sendMode === 'api'">
                   <a-radio-button value="immediate">{{ DOWNLOAD_MODE_LABELS.immediate }}</a-radio-button>
                   <a-radio-button value="confirm">{{ DOWNLOAD_MODE_LABELS.confirm }}</a-radio-button>
                 </a-radio-group>
                 <template #extra>
                   <span class="extra">
-                    <template v-if="form.downloadMode === 'immediate'">
+                    <template v-if="form.sendMode === 'api'">
+                      接口模式没有迅雷确认框，任务一律直接开始下载；需要「确认后下载」请切回页面自动化。
+                    </template>
+                    <template v-else-if="form.downloadMode === 'immediate'">
                       发送后自动解析链接并点击「立即下载」，全程无需在迅雷页面操作。
                     </template>
                     <template v-else>
@@ -444,14 +468,18 @@ function monitorText(item: SendHistoryEntry): string {
                 </template>
               </a-form-item>
 
-              <div class="switch-row">
+              <div class="switch-row" :class="{ disabled: form.sendMode === 'api' }">
                 <div>
                   <div class="switch-label">发送前刷新迅雷页面</div>
                   <div class="switch-extra">
-                    开启后发送前会刷新迅雷页，保证干净状态；关闭可减少打断，但页面有未处理弹窗时会拦截发送。
+                    {{
+                      form.sendMode === 'api'
+                        ? '接口模式不打开页面，此开关暂不生效。'
+                        : '开启后发送前会刷新迅雷页，保证干净状态；关闭可减少打断，但页面有未处理弹窗时会拦截发送。'
+                    }}
                   </div>
                 </div>
-                <a-switch v-model:checked="form.reloadBeforeSend" />
+                <a-switch v-model:checked="form.reloadBeforeSend" :disabled="form.sendMode === 'api'" />
               </div>
 
               <div class="section-title">通知与任务监控</div>
