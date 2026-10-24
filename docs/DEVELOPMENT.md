@@ -55,31 +55,44 @@ wxt.config.ts            # 扩展清单与构建配置
 
 ## 工作原理
 
-沿用原型的 **DOM 自动化** 路线：复用浏览器里已登录的迅雷 Web 会话，通过
-`chrome.scripting.executeScript` 向迅雷页面注入脚本，模拟点击「新建任务 → 填链接 → 解析 → 立即下载」。
-保存路径通过读取迅雷页面自身的 Vuex 状态、按路径解析出目录 ID 后预选，再交给面板原生的建任务流程；
-全程复用已登录会话，无需存储账号密码，也不自行拼接建任务请求。
+```mermaid
+flowchart TB
+    A["popup / 右键菜单"] --> B["background.sendLinksToNas()（并发锁 + 写入发送记录）"]
+    B --> C{"sendMode"}
+    C -- "页面自动化（dom）" --> D["打开/复用迅雷标签页 + 页面探针预检"]
+    D --> E["注入脚本模拟：新建任务 → 填链接 → 解析"]
+    E --> F{"downloadMode"}
+    F -- "立即下载" --> G["路径预选（+ 番号勾选）后点击「立即下载」"]
+    F -- "确认后下载" --> H["停在迅雷确认框，由用户手动确认"]
+    C -- "接口直连（api）" --> I["drive/v1 解析文件树 + avMatch 番号匹配"]
+    I --> J{"downloadMode"}
+    J -- "立即下载" --> K["createTask 直接建任务"]
+    J -- "确认后下载" --> L["打开自绘确认窗口，确认后建任务"]
+    G --> M["更新发送记录 / 通知 / 按需启动任务监控"]
+    H --> M
+    K --> M
+    L --> M
+```
 
-> 路径填写的是**迅雷面板里显示的路径**（如 `/downloads/movies`），不是 NAS 宿主机路径。
-> 目录必须已在迅雷中创建；插件不会自动建目录。路径不存在或不可写时会回退到迅雷当前目录，并在通知中说明原因。
+**页面自动化（默认）**——复用已登录的迅雷 Web 会话，注入脚本模拟「新建任务 → 填链接 → 解析 → 立即下载」：
 
-迅雷 Web UI 的关键选择器集中在 [utils/xunleiAutomation.ts](../utils/xunleiAutomation.ts)，套件更新导致 DOM 变化时只需调整该文件。
+- 保存路径：读取迅雷页面 Vuex 解析出目录 ID 后预选，交给面板原生建任务流程，不自行拼接请求
+- 路径填迅雷面板显示的路径（如 `/downloads/movies`），目录需已存在；不可用时回退迅雷当前目录并在通知中说明
+- 番号匹配：只读拍平 BT 文件树 → 本机算计划 → 调面板树组件 `setCheckedKeys` 应用勾选；不重排界面
+- 番号识别支持标准番号、FC2、Tokyo Hot、无码日期码、分集 / 字幕后缀；根名番号只在零命中时兜底继承
+- 严格模式多任务任一未识别整单暂停（迅雷只有一个「立即下载」按钮）；直链跳过匹配
+- DOM 选择器集中在 [utils/xunleiAutomation.ts](../utils/xunleiAutomation.ts)
 
-番号匹配在解析结果弹窗出现后**只读**读取 BT 文件树，在本机计算匹配计划，再调用迅雷面板自身的文件树组件应用勾选；不重排界面、不自行拼接 NAS 请求。番号识别参考 xeyes 的文件名归一化规则，支持标准番号、FC2、Tokyo Hot、无码日期码、分集/字幕后缀等；排序只决定保留哪些文件（尤其配合上限），**不会改变迅雷弹窗中的文件顺序**。任务名带番号但没有任何文件命中时，视频文件按任务名整体保留；一旦有文件命中该番号，其余不带番号的文件按不匹配排除，避免误选广告或说明视频。
+**接口直连**——不打开页面，直接调用套件 `drive/v1` 接口：
 
-> 严格模式下一次发送多个任务时，只要任一任务未识别就整单暂停，因为迅雷只有一个「立即下载」按钮，无法只提交部分任务。直链任务没有 BT 文件树，会自动跳过番号匹配。
+- 流程：`resource/list` 解析文件树 → 同一套 `avMatch` 纯函数决定保留文件 → 序号编码为 `sub_file_index`（如 `"0"`、`"0-1,3"`）随 `createTask` 下发
+- 每个链接独立任务，未匹配只暂停自己，不连累同批其它链接
+- 鉴权用套件首页下发的短期令牌（约 3 天），仅内存 / 会话缓存，不保存账号密码；取不到令牌时明确报错并提示切回页面自动化
+- 「确认后下载」：解析结果写入 `storage.session` 后打开 [entrypoints/confirm](../entrypoints/confirm/) 自绘确认窗口
+  - 窗口不持有令牌，提交只回传文件 id，由后台重新校验编码后建任务
+  - 关闭或 30 分钟未确认按取消写回记录；文件树超解析上限只能整包
 
-### 接口直连通道
-
-选择「接口直连」后，插件不再打开迅雷页面，而是调用迅雷套件自身的 `drive/v1` 接口：先用 `resource/list` 解析磁力/种子得到 BT 文件树，**在同一套 `avMatch` 纯函数里算出要保留哪些文件**，再把选中序号编码成接口参数（如 `"0"`、`"0-1,3"`）随建任务请求下发，保存路径则按配置的 NAS 路径逐级解析成目录 Id。
-
-因此这条通道下：不跳转、不抢焦点、不依赖迅雷弹窗结构；番号匹配与页面自动化完全一致，而且**每个链接是独立任务，未匹配的只暂停自己，不会连累同一批里的其它链接**。
-
-选择「确认后下载」时（默认模式），后台只解析并计算预选，不建任务，把精简后的文件树/预选结果写入 `storage.session`，再用 `chrome.windows.create` 打开 [entrypoints/confirm](../entrypoints/confirm/) 的扩展确认窗口。用户可勾选文件、按扩展名筛选、编辑任务名、选择 `device/download_paths` 返回的已登记目录；点击「立即下载」后才把选中文件 id 回传后台，由 `buildConfirmCreateSpecs()` 重新校验并编码成 `sub_file_index` 建任务。窗口不持有接口令牌，关闭窗口或 30 分钟未确认会按取消写回发送记录。文件树超过解析上限时只能整包下载，避免拿残缺列表做逐文件选择。
-
-鉴权使用套件首页下发的短期令牌（约 3 天有效），插件只在内存/会话存储里缓存它，**不接触、不保存你的迅雷账号密码**。若迅雷版本变化导致取不到令牌，会明确报错并提示切回页面自动化，不会瞎猜接口。
-
-> 本仓库只有浏览器扩展，没有 NAS 端组件或后端服务；NAS 侧只需运行 [cnk3x/xunlei](https://github.com/cnk3x/xunlei)（群晖套件版 `pan-xunlei-com`）。
+> 本仓库只有浏览器扩展，没有 NAS 端组件或后端服务；NAS 侧只需运行 [cnk3x/xunlei](https://github.com/cnk3x/xunlei)。
 
 ## 调试部署
 
@@ -98,16 +111,16 @@ wxt.config.ts            # 扩展清单与构建配置
 1. 安装依赖：`pnpm install`
 2. （可选）先做类型检查和构建：`pnpm check`
 3. 执行上表对应命令。脚本会再构建一次，因此无需提前 `pnpm build`
-4. **首次部署**：若调试实例的扩展列表里没有「NAS 迅雷助手」，在它自动打开的 `chrome://extensions` 页面开启「开发者模式」，点击「加载已解压的扩展程序」，选择 `.output/chrome-mv3`；之后同一调试 profile 的部署均可全自动
+4. **首次部署**：扩展列表没有「NAS 迅雷助手」时，在自动打开的 `chrome://extensions` 手动加载一次（开发者模式 → 加载已解压的扩展程序 → `.output/chrome-mv3`）；之后同 profile 部署全自动
 5. 在扩展设置页填入 NAS 迅雷地址，并在调试实例中打开迅雷页面登录一次
 6. 右键任意链接或在 popup 中发送，按[手动测试清单](#手动测试清单)验收
 
 ### 脚本做了什么
 
-1. 执行 `pnpm build`，并确认 `.output/chrome-mv3/manifest.json` 存在
-2. 探测目标端口的 Chrome DevTools Protocol（CDP）：已有调试实例则复用，否则用独立 `--user-data-dir` 启动并等待端口就绪
-3. 通过 `chrome://extensions` 页面的 `chrome.developerPrivate.reload()` 重载扩展
-4. 若找不到扩展或重载失败：关闭调试实例、清理 Service Worker 脚本缓存，再带 `--load-extension` 重启。该回退仅对仍支持 `--load-extension` 的浏览器（Chrome for Testing、Cent 5.x 等）等效于完成部署；Chrome 137+ 正式版仍需手动加载一次
+1. 执行 `pnpm build`，确认 `.output/chrome-mv3/manifest.json` 存在
+2. 探测目标端口的 CDP：已有调试实例则复用，否则独立 `--user-data-dir` 启动并等待就绪
+3. 经 `chrome://extensions` 的 `chrome.developerPrivate.reload()` 重载扩展
+4. 回退（找不到扩展或重载失败）：关调试实例 → 清 Service Worker 脚本缓存 → 带 `--load-extension` 重启。回退仅对支持该参数的浏览器（Chrome for Testing、Cent 5.x）等效；Chrome 137+ 正式版仍需手动加载
 
 ### 环境变量
 
@@ -118,22 +131,31 @@ PowerShell 中设置方式为 `$env:XUNLEI_DEBUG_PORT=9333; pnpm deploy`。
 
 ### 注意事项
 
-- **Chrome 137+ 正式版忽略 `--load-extension`**：首次通常需要按上文手动「加载已解压的扩展程序」。若项目根目录存在 Chrome for Testing（`chrome/win64-<version>/chrome-win64/chrome.exe`，该目录已被 git 忽略），`pnpm deploy` 会优先使用它，可自动挂载；也可设 `XUNLEI_DEBUG_BROWSER` 指向其它 Chromium 构建
-- Cent Browser 5.x（已适配 5.2.1168.83 / Chromium 132）没有该限制，首次部署通常即可自动挂载；安装在便携目录（如 `D:\Software\CentBrowser\Application\chrome.exe`）时脚本可自动探测，其它位置请设 `XUNLEI_DEBUG_BROWSER`
-- 调试 profile 是项目内的独立目录且已被 git 忽略，不会污染日常浏览器，也不要提交
-- 部署后如果行为仍是旧版本，见下方[开发排障](#开发排障)
+- **Chrome 137+ 正式版忽略 `--load-extension`**：首次需手动加载（见上文）。项目根目录存在 Chrome for Testing（`chrome/win64-<version>/chrome-win64/chrome.exe`，已 git 忽略）时优先使用，可自动挂载；也可用 `XUNLEI_DEBUG_BROWSER` 指定其它构建
+- **Cent Browser 5.x**（已适配 5.2.1168.83 / Chromium 132）无此限制，首次通常自动挂载；便携路径 `D:\Software\CentBrowser\Application\chrome.exe` 可自动探测，其它位置设 `XUNLEI_DEBUG_BROWSER`
+- 调试 profile 是项目内独立目录且已被 git 忽略，不污染日常浏览器，也不要提交
+- 部署后行为仍是旧版本时，见[开发排障](#开发排障)
 
 ## 开发排障
 
 **部署脚本提示未找到浏览器**
-脚本未能自动探测到浏览器安装位置。设置 `XUNLEI_DEBUG_BROWSER` 指向浏览器主程序（如 `...\Application\chrome.exe`）后重试。
+设置 `XUNLEI_DEBUG_BROWSER` 指向浏览器主程序（如 `...\Application\chrome.exe`）后重试。
 
 **调试端口等待超时**
-端口可能被非调试进程占用，或浏览器启动失败。先访问 `http://127.0.0.1:<端口>/json/version` 检查；关闭遗留的调试实例，或通过 `XUNLEI_DEBUG_PORT` 换一个端口。
+先访问 `http://127.0.0.1:<端口>/json/version` 检查；关闭遗留调试实例，或 `XUNLEI_DEBUG_PORT` 换端口。
 
 **调试实例里没有本扩展，或部署后仍是旧行为**
 - 首次：按「执行步骤」第 4 步手动加载 `.output/chrome-mv3`
-- 旧行为：Chromium 会按 profile 缓存扩展 Service Worker 的脚本字节码。完全退出调试浏览器后，删除对应 profile 下的 `Default/Service Worker/ScriptCache` 目录，再重新部署（`chrome` 目标为 `.debug-profile`，Cent 为 `.debug-profile-cent`，Edge 为 `.debug-profile-edge`）
+- 旧行为：Chromium 按 profile 缓存扩展 SW 字节码。完全退出调试浏览器 → 删 profile 下 `Default/Service Worker/ScriptCache` → 重新部署（`.debug-profile` / `.debug-profile-cent` / `.debug-profile-edge`）
+
+## 文档截图与脱敏
+
+[README「界面预览」](../README.md#界面预览) 的截图（[docs/images](images/)）不含真实数据：
+
+- 生成方式：CDP 注入拦截层，把存储读取与消息响应替换为演示数据后再截图，页面渲染出的内容全部虚构，无需事后打码
+- 占位约定：地址 `http://192.168.5.2:2345/...`、路径 `/downloads/movies`、番号 `ABC-123`、任务名用 Blender 等公开电影
+- 必须展示真实界面的截图：敏感区域（IP / 文件名 / 番号 / 令牌）入库前先涂码，并在提交说明中注明
+- 截图脚本为仓库外一次性工具，不入 git；更新时先 `pnpm build`，用最新产物重截
 
 ## 手动测试清单
 
