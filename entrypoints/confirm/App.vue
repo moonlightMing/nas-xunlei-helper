@@ -406,9 +406,6 @@ function closeWindow(): void {
         </div>
 
         <template v-else-if="result">
-          <header class="dialog-head">
-            <span class="dialog-title">下载确认</span>
-          </header>
           <div class="result">
             <div class="state-icon" :class="result.tone">
               {{ result.tone === 'ok' ? '✓' : '!' }}
@@ -429,7 +426,6 @@ function closeWindow(): void {
             <span class="dialog-title">
               {{ isSingle ? '新建下载任务' : `确认下载（${pending.tasks.length} 个任务）` }}
             </span>
-            <button class="close-btn" type="button" aria-label="取消" @click="handleCancel">×</button>
           </header>
 
           <div class="dialog-body">
@@ -457,7 +453,6 @@ function closeWindow(): void {
                   <a-input
                     v-if="isSingle"
                     v-model:value="stateOf(index).name"
-                    size="small"
                     class="name-input"
                     :maxlength="200"
                     placeholder="任务名称"
@@ -597,7 +592,6 @@ function closeWindow(): void {
 }
 
 .dialog-head {
-  position: relative;
   flex: none;
   display: flex;
   align-items: center;
@@ -607,34 +601,13 @@ function closeWindow(): void {
 }
 
 .dialog-title {
-  max-width: calc(100% - 80px);
+  max-width: calc(100% - 32px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 15px;
   font-weight: 500;
   color: #1a1a1a;
-}
-
-.close-btn {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 26px;
-  height: 26px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: #999;
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.close-btn:hover {
-  background: #f5f5f5;
-  color: #333;
 }
 
 .dialog-body {
@@ -740,7 +713,7 @@ function closeWindow(): void {
 }
 
 .name-input {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .task-meta {
