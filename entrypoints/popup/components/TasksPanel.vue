@@ -205,6 +205,55 @@ onBeforeUnmount(() => {
               <i class="status-dot" />
               {{ PHASE_LABELS[task.phase] ?? task.phase }}
             </span>
+            <span class="actions">
+              <button
+                v-if="task.phase === 'PHASE_TYPE_RUNNING' || task.phase === 'PHASE_TYPE_PENDING'"
+                type="button"
+                class="act"
+                title="暂停"
+                aria-label="暂停"
+                :disabled="pendingIds.has(task.id)"
+                @click="void runAction(task, 'operate', 'PHASE_TYPE_PAUSED')"
+              >
+                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M9.5 5.5v13M14.5 5.5v13" />
+                </svg>
+              </button>
+              <button
+                v-else-if="task.phase === 'PHASE_TYPE_PAUSED' || task.phase === 'PHASE_TYPE_ERROR'"
+                type="button"
+                class="act"
+                title="继续"
+                aria-label="继续"
+                :disabled="pendingIds.has(task.id)"
+                @click="void runAction(task, 'operate', 'PHASE_TYPE_RUNNING')"
+              >
+                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8.5 6v12c0 .8.9 1.3 1.6.9l9.5-6c.6-.4.6-1.3 0-1.7l-9.5-6c-.7-.5-1.6 0-1.6.8z" />
+                </svg>
+              </button>
+              <a-popconfirm
+                title="删除后迅雷会同时移除已下载的文件，确定？"
+                ok-text="删除"
+                cancel-text="取消"
+                @confirm="void runAction(task, 'delete')"
+              >
+                <button
+                  type="button"
+                  class="act danger"
+                  title="删除"
+                  aria-label="删除"
+                  :disabled="pendingIds.has(task.id)"
+                >
+                  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4.5 6.6h15" />
+                    <path d="M10 6.6V5.4c0-.8.6-1.4 1.4-1.4h1.2c.8 0 1.4.6 1.4 1.4v1.2" />
+                    <path d="M6.6 6.6l.9 12c.06.9.8 1.6 1.7 1.6h5.6c.9 0 1.64-.7 1.7-1.6l.9-12" />
+                    <path d="M10 10.6v6.2M14 10.6v6.2" />
+                  </svg>
+                </button>
+              </a-popconfirm>
+            </span>
           </div>
           <a-progress
             v-if="task.phase !== 'PHASE_TYPE_COMPLETE'"
@@ -223,32 +272,6 @@ onBeforeUnmount(() => {
             :class="messageTone(task.phase)"
           >
             {{ task.message }}
-          </div>
-          <div class="ops">
-            <a-button
-              v-if="task.phase === 'PHASE_TYPE_RUNNING' || task.phase === 'PHASE_TYPE_PENDING'"
-              size="small"
-              :disabled="pendingIds.has(task.id)"
-              @click="void runAction(task, 'operate', 'PHASE_TYPE_PAUSED')"
-            >
-              暂停
-            </a-button>
-            <a-button
-              v-else-if="task.phase === 'PHASE_TYPE_PAUSED' || task.phase === 'PHASE_TYPE_ERROR'"
-              size="small"
-              :disabled="pendingIds.has(task.id)"
-              @click="void runAction(task, 'operate', 'PHASE_TYPE_RUNNING')"
-            >
-              继续
-            </a-button>
-            <a-popconfirm
-              title="删除后迅雷会同时移除已下载的文件，确定？"
-              ok-text="删除"
-              cancel-text="取消"
-              @confirm="void runAction(task, 'delete')"
-            >
-              <a-button size="small" danger :disabled="pendingIds.has(task.id)">删除</a-button>
-            </a-popconfirm>
           </div>
         </li>
       </ul>
@@ -448,10 +471,54 @@ onBeforeUnmount(() => {
   color: #cf1322;
 }
 
-.ops {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-top: 6px;
+/* 操作收进标题行右上角：默认灰、悬停才显色，删除保持二次确认 */
+.actions {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 2px;
+}
+
+.act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.act:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.act:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.act.danger:hover:not(:disabled) {
+  background: #fff1f0;
+  color: #cf1322;
+}
+
+.ico {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 </style>
