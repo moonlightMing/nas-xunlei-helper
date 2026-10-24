@@ -14,9 +14,8 @@
 
 ## 上游与许可
 
-- 适配后端：[cnk3x/xunlei](https://github.com/cnk3x/xunlei)（从群晖迅雷套件提取的远程下载服务）。`drive/v1` 契约实测于 3.x（v3.23.5），上游 4.0.0-beta 可能已变化。
-- 灵感来源：[Soraika/nas-thunder-helper](https://github.com/Soraika/nas-thunder-helper)。
-- 开源协议：[MIT License](LICENSE)，仓库公开在 [GitHub](https://github.com/moonlightMing/nas-xunlei-helper)。
+- 适配后端：[cnk3x/xunlei](https://github.com/cnk3x/xunlei)（群晖套件版 `pan-xunlei-com`），`drive/v1` 契约实测于 v3.23.5。
+- 灵感来源：[Soraika/nas-thunder-helper](https://github.com/Soraika/nas-thunder-helper)；协议：[MIT License](LICENSE)。
 
 ## 常用命令
 

@@ -1,15 +1,13 @@
 # NAS 迅雷助手
 
-[![GitHub](https://img.shields.io/badge/GitHub-moonlightMing%2Fnas--xunlei--helper-181717?logo=github)](https://github.com/moonlightMing/nas-xunlei-helper)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Manifest V3](https://img.shields.io/badge/Manifest-V3-brightgreen.svg)](https://developer.chrome.com/docs/extensions/develop/migrate)
-[![WXT](https://img.shields.io/badge/WXT-0.21-2c3e50.svg)](https://wxt.dev)
 
-浏览器扩展：把网页里的下载链接（`thunder://`、`magnet:`、`ed2k:`、`http(s)://`）一键发送到 NAS 迅雷远程下载。
+把下载链接（`thunder://`、`magnet:`、`ed2k:`、`http(s)://`）一键发送到 NAS 迅雷。
 
-**适配后端**：[cnk3x/xunlei](https://github.com/cnk3x/xunlei) —— 从迅雷群晖套件提取的迅雷远程下载服务（群晖套件版 `pan-xunlei-com`），接口契约实测于 3.x（v3.23.5）。
-
-**灵感来源**：[Soraika/nas-thunder-helper](https://github.com/Soraika/nas-thunder-helper)。本项目在其页面自动化思路的基础上，用 [WXT](https://wxt.dev) + [Vue 3](https://vuejs.org) + TypeScript + [Ant Design Vue](https://antdv.com) 重写，并扩展出接口直连、番号匹配与任务管理能力。
+- 适配后端：[cnk3x/xunlei](https://github.com/cnk3x/xunlei)（群晖套件版 `pan-xunlei-com`）
+- 灵感来源：[Soraika/nas-thunder-helper](https://github.com/Soraika/nas-thunder-helper)
+- 技术栈：[WXT](https://wxt.dev) + [Vue 3](https://vuejs.org) + TypeScript + [Ant Design Vue](https://antdv.com)
+- 项目地址：[github.com/moonlightMing/nas-xunlei-helper](https://github.com/moonlightMing/nas-xunlei-helper)
 
 ## 功能
 
@@ -177,7 +175,7 @@ PowerShell 中设置方式为 `$env:XUNLEI_DEBUG_PORT=9333; pnpm deploy`。
 1. `pnpm build`
 2. 打开 `chrome://extensions`，开启「开发者模式」
 3. 「加载已解压的扩展程序」选择 `.output/chrome-mv3`
-4. 打开扩展设置页，填入 NAS 迅雷地址（群晖套件默认形如 `http://192.168.5.2:2345/webman/3rdparty/pan-xunlei-com/index.cgi/#/home`；Docker 部署请填其 Web UI 实际地址）
+4. 打开扩展设置页，填入 NAS 迅雷地址（如 `http://192.168.5.2:2345/webman/3rdparty/pan-xunlei-com/index.cgi/#/home`）
 5. **先在浏览器中打开一次迅雷页面并登录**（本插件复用已登录会话，不管理凭证）
 6. 在任意网页右键链接「发送到 NAS 迅雷」，或在 popup 中粘贴链接发送
 
@@ -312,7 +310,7 @@ NAS 上已经有一个指向同一资源的下载任务。迅雷在这种情况�
 - **番号匹配依赖迅雷文件树组件**：通过页面 Vue 组件的 `setCheckedKeys` 应用勾选；迅雷大版本更新若改动组件结构/方法名，会暂停并提示手动处理，不会在不确认的情况下点击下载。匹配逻辑只用 xeyes 的文件名规则做本地识别，不引入模型、不请求外部服务。
 - **番号匹配排序不改变迅雷界面**：仅用于选择保留哪些文件；设置每任务上限可能漏掉分集，默认 0（不限）。
 - **番号匹配只处理 BT 文件树**：直链任务跳过；页面自动化模式下多任务严格模式整单暂停（接口直连按链接独立暂停）。手动番号/关键词仅保存在本机 `storage.local`，历史只记录计数和少量摘要，不保存完整文件列表。
-- **接口直连依赖套件私有接口**：`drive/v1` 契约从 [cnk3x/xunlei](https://github.com/cnk3x/xunlei) 的群晖套件中逆向确认（实测 v3.23.5；上游已发布 4.0.0-beta，接口可能变化），迅雷大版本更新可能改变首页令牌或字段；取不到令牌或接口报错时会明确失败并提示切回页面自动化，不会在不确认的情况下继续建任务。
+- **接口直连依赖套件私有接口**：`drive/v1` 契约实测于 [cnk3x/xunlei](https://github.com/cnk3x/xunlei) v3.23.5，套件升级后可能变化；取不到令牌或接口报错时会明确失败并提示切回页面自动化，不会继续建任务。
 - **接口直连不启动页面任务监控**：该通道不打开迅雷页面，因此原有的每分钟任务监控不生效，下载状态请直接在 popup「下载任务」页查看；通知仍覆盖发送结果与番号匹配暂停。
 - **接口直连没有「确认后下载」**：接口层没有迅雷确认框，任务一律直接开始；需要人工确认文件名或路径时请用页面自动化通道。
 - **DOM 自动化依赖 [cnk3x/xunlei](https://github.com/cnk3x/xunlei) 的页面结构**，迅雷或套件大版本更新后选择器可能需要适配。
@@ -322,21 +320,9 @@ NAS 上已经有一个指向同一资源的下载任务。迅雷在这种情况�
 
 ## 开源协议
 
-本项目基于 [MIT License](LICENSE) 开源，可自由使用、修改与分发，只需保留版权与许可声明。
-
-## 参与贡献
-
-欢迎通过 [Issues](https://github.com/moonlightMing/nas-xunlei-helper/issues) 反馈问题，或提交 [Pull Request](https://github.com/moonlightMing/nas-xunlei-helper/pulls)。提交前请先执行 `pnpm check`，并阅读 [AGENTS.md](AGENTS.md) 中的约定。
-
-## 致谢
-
-- [cnk3x/xunlei](https://github.com/cnk3x/xunlei)：本插件适配的迅雷远程下载服务端。
-- [Soraika/nas-thunder-helper](https://github.com/Soraika/nas-thunder-helper)：项目灵感来源。
-- [WXT](https://wxt.dev)、[Vue 3](https://vuejs.org)、[Ant Design Vue](https://antdv.com)：构建与 UI 基础设施。
+[MIT License](LICENSE)。欢迎提交 Issue 或 PR。
 
 ## 相关文档
 
-- [项目主页](https://github.com/moonlightMing/nas-xunlei-helper)
-- [CHANGELOG.md](CHANGELOG.md)：版本更新日志
-- [LICENSE](LICENSE)：MIT 许可证
-- [AGENTS.md](AGENTS.md)：面向 AI 编码代理的项目约定、完整部署步骤与修改注意事项
+- [CHANGELOG.md](CHANGELOG.md)：更新日志
+- [AGENTS.md](AGENTS.md)：开发与部署约定
