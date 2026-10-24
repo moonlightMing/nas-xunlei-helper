@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { nextTick, onMounted, ref, watch } from 'vue';
 import { ensureSettingsLoaded, getSettings } from '@/utils/settings';
 import SendPanel from './components/SendPanel.vue';
 import TasksPanel from './components/TasksPanel.vue';
@@ -25,6 +25,16 @@ onMounted(async () => {
   } finally {
     settingsLoading.value = false;
   }
+});
+
+/* 切走页签后旧面板会被加上 aria-hidden，焦点留在其中（如链接输入框）会触发浏览器可访问性警告 */
+watch(activeTab, () => {
+  void nextTick(() => {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && focused.closest('.ant-tabs-tabpane[aria-hidden="true"]')) {
+      focused.blur();
+    }
+  });
 });
 </script>
 

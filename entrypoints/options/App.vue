@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { message, Modal } from 'ant-design-vue';
 import {
   clearHistory,
@@ -106,6 +106,16 @@ function handlePageHide(): void {
 }
 
 watch(form, scheduleSave, { deep: true });
+
+/* 切走页签后旧面板会被加上 aria-hidden，焦点留在其中（如开关）会触发浏览器可访问性警告 */
+watch(activeTab, () => {
+  void nextTick(() => {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && focused.closest('.ant-tabs-tabpane[aria-hidden="true"]')) {
+      focused.blur();
+    }
+  });
+});
 
 /** 设置项不含 avMatch（由番号匹配 tab 独立保存），避免用旧快照覆盖 */
 function buildSavePayload(): Partial<XunleiSettings> {
