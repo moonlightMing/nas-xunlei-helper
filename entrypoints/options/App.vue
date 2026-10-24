@@ -185,7 +185,7 @@ const handleReset = () => {
   Modal.confirm({
     title: '恢复默认设置？',
     content:
-      '将清空 NAS 迅雷地址、默认下载位置、通知/任务监控设置以及番号匹配规则，并将下载模式重置为「立即下载」。发送记录不会被清除。',
+      '将清空 NAS 迅雷地址、默认下载位置、通知/任务监控设置以及番号匹配规则，并将下载模式重置为「确认后下载」。发送记录不会被清除。',
     okText: '恢复默认',
     okType: 'danger',
     cancelText: '取消',
@@ -438,7 +438,7 @@ function monitorText(item: SendHistoryEntry): string {
                     <template v-if="form.sendMode === 'api'">
                       直接调用迅雷套件的 drive/v1 接口建任务：不打开迅雷页面、不抢焦点、不模拟点击。
                       磁力/种子会先解析文件树再按番号规则勾选，勾选结果作为接口参数下发；严格模式下未命中的任务单独暂停，
-                      不会连累同一批里的其它链接。鉴权用套件首页下发的短期令牌，插件不保存账号密码。
+                      不会连累同一批里的其它链接。「确认后下载」会打开扩展自己的确认窗口。鉴权用套件首页下发的短期令牌，插件不保存账号密码。
                     </template>
                     <template v-else>
                       打开迅雷页面并模拟「新建任务 → 填链接 → 解析 → 立即下载」，兼容性最好，支持番号匹配与确认后再下载。
@@ -449,14 +449,18 @@ function monitorText(item: SendHistoryEntry): string {
 
               <a-form-item>
                 <template #label><span class="label">下载模式</span></template>
-                <a-radio-group v-model:value="form.downloadMode" :disabled="form.sendMode === 'api'">
-                  <a-radio-button value="immediate">{{ DOWNLOAD_MODE_LABELS.immediate }}</a-radio-button>
+                <a-radio-group v-model:value="form.downloadMode">
                   <a-radio-button value="confirm">{{ DOWNLOAD_MODE_LABELS.confirm }}</a-radio-button>
+                  <a-radio-button value="immediate">{{ DOWNLOAD_MODE_LABELS.immediate }}</a-radio-button>
                 </a-radio-group>
                 <template #extra>
                   <span class="extra">
-                    <template v-if="form.sendMode === 'api'">
-                      接口模式没有迅雷确认框，任务一律直接开始下载；需要「确认后下载」请切回页面自动化。
+                    <template v-if="form.sendMode === 'api' && form.downloadMode === 'immediate'">
+                      解析完成后直接调用接口创建任务并开始下载，不打开任何页面。
+                    </template>
+                    <template v-else-if="form.sendMode === 'api'">
+                      解析完成后打开扩展自己的确认窗口：可核对/勾选文件、编辑任务名、选择保存目录，
+                      点击「立即下载」后才创建任务。关闭窗口不会创建下载。
                     </template>
                     <template v-else-if="form.downloadMode === 'immediate'">
                       发送后自动解析链接并点击「立即下载」，全程无需在迅雷页面操作。

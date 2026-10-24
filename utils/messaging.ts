@@ -1,4 +1,5 @@
 import type { FileListSnapshot } from '@/utils/avMatch';
+import type { ConfirmSelectionInput } from '@/utils/confirm';
 import type { SendErrorCode } from '@/utils/sendErrors';
 import type { DirItem, SendOutcome } from '@/utils/xunleiAutomation';
 import type { XunleiPhase } from '@/utils/xunleiApi';
@@ -125,6 +126,19 @@ export interface TaskActionResponse {
   message?: string;
 }
 
+/** 接口模式「确认后下载」窗口提交/取消（内部页面消息） */
+export interface ConfirmSubmitMessage {
+  type: 'confirm';
+  action: 'submit';
+  data: { id: string; selections: ConfirmSelectionInput[]; parentFolderId?: string };
+}
+
+export interface ConfirmCancelMessage {
+  type: 'confirm';
+  action: 'cancel';
+  data: { id: string };
+}
+
 export type ExtensionMessage =
   | SendLinksMessage
   | OpenXunleiMessage
@@ -133,4 +147,6 @@ export type ExtensionMessage =
   | ReadDialogFilesMessage
   | ListTasksMessage
   | OperateTaskMessage
-  | DeleteTasksMessage;
+  | DeleteTasksMessage
+  | ConfirmSubmitMessage
+  | ConfirmCancelMessage;

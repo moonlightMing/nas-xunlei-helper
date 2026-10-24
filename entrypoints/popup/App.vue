@@ -61,11 +61,21 @@ onMounted(async () => {
 <style scoped>
 .popup {
   box-sizing: border-box;
-  width: 560px;
-  /* 留 2px 余量：高缩放时弹窗被浏览器限宽，亚像素取整会挤出横向滚动条 */
-  max-width: calc(100% - 2px);
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
   padding: 12px 14px 8px;
   background: #fff;
+}
+
+@media (max-width: 460px) {
+  .popup {
+    padding: 10px 10px 6px;
+  }
+
+  .footer {
+    gap: 10px;
+  }
 }
 
 .header {

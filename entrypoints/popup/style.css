@@ -1,0 +1,17 @@
+/* 弹窗根节点：560px 是期望宽度，但浏览器缩放后可用宽度可能变小，
+   max-width 让内容跟随可视宽度回流，overflow-x clip 消除亚像素取整产生的横向滚动条 */
+html {
+  width: 560px;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+body {
+  margin: 0;
+  min-width: 0;
+  background: #fff;
+}
+
+#app {
+  min-width: 0;
+}

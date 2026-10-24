@@ -26,7 +26,7 @@
  *   XUNLEI_DEBUG_BROWSER  浏览器可执行文件路径，指定后跳过自动探测
  */
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,8 @@ const outputDir = path.join(projectRoot, ".output", "chrome-mv3");
 
 const EXT_NAME_HINT = "nas 迅雷"; // manifest 里的 name「NAS 迅雷助手」，匹配时忽略大小写
 const OUTPUT_DIR_HINT = "chrome-mv3"; // 未打包扩展的 path 会包含该目录名
+/** 刚构建出的 manifest 版本（deploy 日志用，避免读到 reload 前的旧版本） */
+let builtVersion = "unknown";
 
 /** 目标浏览器：默认端口、独立调试 profile、可执行文件探测路径（按优先级） */
 const BROWSER_TARGETS = {
@@ -115,6 +117,10 @@ async function runBuild() {
   if (!existsSync(path.join(outputDir, "manifest.json"))) {
     throw new Error(`未找到构建产物 manifest：${outputDir}`);
   }
+  // getExtensionsInfo 在 reload 前返回的是旧 manifest，日志统一用刚构建出的版本
+  builtVersion = JSON.parse(
+    readFileSync(path.join(outputDir, "manifest.json"), "utf8"),
+  ).version;
   log("构建完成");
 }
 
@@ -331,7 +337,7 @@ async function reloadExtension(port) {
       throw new Error(`扩展 reload 失败：${result?.error ?? "未知错误"}`);
     }
 
-    log(`已重载扩展「${result.name}」v${result.version}（id: ${result.id}）`);
+    log(`已重载扩展「${result.name}」v${builtVersion}（id: ${result.id}）`);
     return;
   }
   throw new Error("chrome://extensions 页面迟迟未就绪，请重试");

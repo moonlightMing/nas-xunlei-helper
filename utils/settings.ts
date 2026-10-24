@@ -16,7 +16,7 @@ import {
 
 export const SETTINGS_STORAGE_KEY = 'nas_xunlei_settings';
 
-/** 下载模式：立即下载 / 停在迅雷确认框由用户编辑后再下载 */
+/** 下载模式：确认后下载（默认）/ 立即下载 */
 export type DownloadMode = 'immediate' | 'confirm';
 
 export const DOWNLOAD_MODE_LABELS: Record<DownloadMode, string> = {
@@ -66,7 +66,7 @@ export interface XunleiSettings {
 export const DEFAULT_SETTINGS: XunleiSettings = {
   xunleiUrl: '',
   downloadPath: '',
-  downloadMode: 'immediate',
+  downloadMode: 'confirm',
   sendMode: 'dom',
   reloadBeforeSend: true,
   notifyOnSendSuccess: false,

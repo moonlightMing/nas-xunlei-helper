@@ -49,8 +49,23 @@ import {
   type SendOutcome,
 } from '@/utils/xunleiAutomation';
 import {
+  buildConfirmCreateSpecs,
+  createConfirmId,
+  deletePendingConfirmation,
+  findPendingByWindowId,
+  getPendingConfirmation,
+  pruneExpiredConfirmations,
+  savePendingConfirmation,
+  setPendingWindowId,
+  type ConfirmPath,
+  type ConfirmSelectionInput,
+  type ConfirmTask,
+  type PendingConfirmation,
+} from '@/utils/confirm';
+import {
   createTask,
   deleteTasks,
+  fetchDownloadPaths,
   flattenResourceFiles,
   getDeviceSpace,
   listTasks,
@@ -156,11 +171,42 @@ export default defineBackground(() => {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === MONITOR_ALARM_NAME) void scanMonitors();
   });
+
+  chrome.windows.onRemoved.addListener((windowId) => {
+    void handleConfirmWindowClosed(windowId);
+  });
 });
 
 async function bootstrap(): Promise<void> {
   await markInterruptedRuns();
   await ensureMonitorAlarm();
+  await expireConfirmations();
+}
+
+/** 确认窗口 30 分钟未提交时按取消处理，避免发送记录永远停在等待状态 */
+async function expireConfirmations(): Promise<void> {
+  const expired = await pruneExpiredConfirmations();
+  for (const pending of expired) {
+    await finishEntry(pending.historyId, {
+      status: 'paused',
+      stage: 'confirm-download',
+      message: '确认窗口已超时，未创建下载',
+      pathApplied: pending.pathApplied,
+    });
+  }
+}
+
+/** 直接关闭确认窗口：没有提交就按取消处理 */
+async function handleConfirmWindowClosed(windowId: number): Promise<void> {
+  const pending = await findPendingByWindowId(windowId);
+  if (!pending) return;
+  await deletePendingConfirmation(pending.id);
+  await finishEntry(pending.historyId, {
+    status: 'paused',
+    stage: 'confirm-download',
+    message: '已关闭确认窗口，未创建下载',
+    pathApplied: pending.pathApplied,
+  });
 }
 
 function collectContextLinks(info: chrome.contextMenus.OnClickData): string[] {
@@ -200,6 +246,11 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
       return testConnection(message.data.url, message.data.downloadPath);
     }
     return listDir(message.data.url, message.data.parentId, message.data.parentPath);
+  }
+  if (message.type === 'confirm') {
+    if (message.action === 'submit') return submitConfirmation(message.data);
+    await cancelConfirmation(message.data.id);
+    return { ok: true };
   }
   if (message.type === 'avMatch') {
     return readDialogFiles();
@@ -418,52 +469,67 @@ function shortLinkLabel(link: string): string {
   return link.length > 32 ? `${link.slice(0, 32)}…` : link;
 }
 
-/**
- * 接口模式：解析 drive/v1/resource/list + 番号匹配后直接调 drive/v1/task 建任务，
- * 不打开迅雷页面、不抢焦点。
- *
- * 与页面自动化模式共用 utils/avMatch.ts 的纯函数，勾选结果编码成迅雷的
- * sub_file_index 索引串（连续段折叠为 "a-b"）。区别在于接口模式每个链接是独立
- * 任务，严格模式下未命中的链接单独暂停，不会像单个「立即下载」按钮那样连累整单。
- */
-async function sendViaApi(
+/** 接口模式共用的上下文：设备 space、目标目录、路径回退信息 */
+interface ApiContext {
+  space: string;
+  parentFolderId: string;
+  pathApplied: PathApplied;
+}
+
+type ApiContextResult = { ok: true; context: ApiContext } | { ok: false; outcome: SendOutcome };
+
+/** 解析 + 番号匹配后，每个链接对应的任务计划（立即下载与确认下载共用） */
+interface ApiTaskPlan {
+  link: string;
+  kind: 'bt' | 'direct';
+  name?: string;
+  /** BT 根节点/直链的大小，字节 */
+  size: number;
+  totalFileCount?: number;
+  files: FlatResourceFile[];
+  truncated: boolean;
+  /** 立即下载：sub_file_index 与选中文件大小 */
+  subFileIndex?: string;
+  selectedFileSize?: number;
+  skippedUnmatched?: boolean;
+  /** 确认下载：预选文件、是否只能整包、整包默认态 */
+  preselectedIds: string[];
+  selectionDisabled: boolean;
+  wholePackageDefault: boolean;
+  matchStatus?: string;
+  note?: string;
+}
+
+interface ApiAnalysis {
+  tasks: ApiTaskPlan[];
+  matchSummary?: MatchSummary;
+  /** 给用户看的匹配结论：接口模式没有迅雷弹窗可核对，必须自己把结果说清楚 */
+  matchText: string;
+}
+
+/** 设备 space + 保存路径 + 重复资源防呆，两种下载模式共用 */
+async function resolveApiContext(
   links: string[],
   settings: XunleiSettings,
-  historyId: string,
   options: SendOptions,
-): Promise<SendOutcome> {
-  const settle = async (
-    outcome: SendOutcome,
-    status: 'ok' | 'failed' | 'partial' | 'paused',
-  ): Promise<SendOutcome> => {
-    await finishEntry(historyId, {
-      status,
-      stage: outcome.stage,
-      code: outcome.code,
-      message: outcome.message,
-      match: outcome.match,
-    });
-    if (options.notify) await showSendResult(outcome, settings, links);
-    return outcome;
-  };
-
+): Promise<ApiContextResult> {
   let space = '';
   try {
     space = await getDeviceSpace(settings.xunleiUrl);
   } catch (error) {
     const meta = apiErrorMeta(error);
-    return settle({ stage: 'prepare', ok: false, code: meta.code, message: meta.message }, 'failed');
+    return { ok: false, outcome: { stage: 'prepare', ok: false, code: meta.code, message: meta.message } };
   }
   if (!space) {
-    return settle(
-      {
+    return {
+      ok: false,
+      outcome: {
         stage: 'prepare',
         ok: false,
         code: 'login-required',
         message: '未获取到 NAS 设备标识，请先在迅雷页面完成登录',
       },
-      'failed',
-    );
+    };
   }
 
   const configuredPath = settings.downloadPath.trim();
@@ -513,8 +579,9 @@ async function sendViaApi(
         .filter((item) => item.key.length > 0 && known.has(item.key))
         .map((item) => known.get(item.key)!);
       if (dupes.length) {
-        return settle(
-          {
+        return {
+          ok: false,
+          outcome: {
             stage: 'match',
             ok: true,
             code: 'duplicate-task',
@@ -525,51 +592,56 @@ async function sendViaApi(
             pathApplied,
             paused: { reason: 'duplicate' },
           },
-          'paused',
-        );
+        };
       }
     } catch {
       // 查重只是防呆，读不到已有任务时宁可放行也不误拦正常发送
     }
   }
 
+  return { ok: true, context: { space, parentFolderId, pathApplied } };
+}
+
+/**
+ * 解析链接并计算番号匹配结果。
+ * needFiles 为 false 时（接口模式立即下载且未启用番号匹配）不访问解析接口。
+ */
+async function analyzeApiLinks(
+  links: string[],
+  settings: XunleiSettings,
+  needFiles: boolean,
+): Promise<{ ok: true; analysis: ApiAnalysis } | { ok: false; outcome: SendOutcome }> {
+  const tasks: ApiTaskPlan[] = links.map((link) => ({
+    link,
+    kind: BT_LINK.test(link.trim()) ? 'bt' : 'direct',
+    size: 0,
+    files: [],
+    truncated: false,
+    preselectedIds: [],
+    selectionDisabled: false,
+    wholePackageDefault: false,
+  }));
   const btLinks = links.filter((link) => BT_LINK.test(link.trim()));
-  interface TaskSpec {
-    url: string;
-    subFileIndex?: string;
-    name?: string;
-    fileSize?: number;
-    totalFileCount?: number;
-    /** 严格模式未命中：不建任务，交由暂停语义上报 */
-    skippedUnmatched?: boolean;
-  }
-  const specs: TaskSpec[] = links.map((url) => ({ url }));
-  let matchSummary: MatchSummary | undefined;
-  /** 给用户看的匹配结论：接口模式没有迅雷弹窗可核对，必须自己把结果说清楚 */
-  let matchText = '';
+  const groups: SnapshotGroup[] = [];
+  const filesByGroup = new Map<string, FlatResourceFile[]>();
+  const rootByGroup = new Map<string, ResourceNode>();
+  const rootIdByLink = new Map<string, string>();
+  const noTreeLinks: string[] = [];
+  let parseTruncated = false;
 
-  if (settings.avMatch.enabled && btLinks.length) {
-    const groups: SnapshotGroup[] = [];
-    const filesByGroup = new Map<string, FlatResourceFile[]>();
-    const rootByGroup = new Map<string, ResourceNode>();
-    const linkByGroup = new Map<string, string>();
-    const noTreeLinks: string[] = [];
-    let parseTruncated = false;
-
-    for (const link of btLinks) {
+  if (needFiles) {
+    for (const task of tasks) {
+      if (task.kind !== 'bt') continue;
       let parsed;
       try {
-        parsed = await parseResources(settings.xunleiUrl, [link], PARSE_PAGE_SIZE);
+        parsed = await parseResources(settings.xunleiUrl, [task.link], PARSE_PAGE_SIZE);
       } catch (error) {
         // 令牌失效/网络不通是系统性故障，不能退化成"整包发送"把问题吞掉
         if (
           error instanceof XunleiApiError &&
           (error.kind === 'unreachable' || error.kind === 'unauthorized' || error.kind === 'token-missing')
         ) {
-          return settle(
-            { stage: 'match', ok: false, ...apiErrorMeta(error), pathApplied },
-            'failed',
-          );
+          return { ok: false, outcome: { stage: 'match', ok: false, ...apiErrorMeta(error) } };
         }
         parsed = undefined;
       }
@@ -578,82 +650,358 @@ async function sendViaApi(
       // 解析不出可用的 BT 文件树：与页面自动化一致按 no-file-list 处理——
       // 整包继续发送，不暂停（ed2k、thunder 包直链等本就没有文件树）
       if (!root || !files.length || !root.is_dir) {
-        if (root && !root.is_dir && files.length) continue;
-        noTreeLinks.push(link);
+        task.kind = 'direct';
+        if (root) {
+          task.name = root.name;
+          task.size = Number(root.file_size ?? 0) || 0;
+          task.totalFileCount = Number(root.file_count ?? 0) || undefined;
+        }
+        task.note = '未解析出 BT 文件树，将整包下载';
+        noTreeLinks.push(task.link);
         continue;
       }
       // 返回叶子数顶到 page_size 说明文件树被截断，不能拿残缺列表下结论
       if (files.length >= PARSE_PAGE_SIZE) parseTruncated = true;
-      const rootId = root.id ?? link;
+      const rootId = root.id ?? task.link;
+      task.name = root.name;
+      task.size = Number(root.file_size ?? 0) || 0;
+      task.totalFileCount = Number(root.file_count ?? 0) || undefined;
+      task.files = files;
+      task.truncated = files.length >= PARSE_PAGE_SIZE;
       groups.push({
         rootId,
-        rootName: root.name ?? link,
+        rootName: root.name ?? task.link,
         files: files.map((file) => ({ id: file.id, name: file.name, path: file.path, size: file.size })),
       });
       filesByGroup.set(rootId, files);
       rootByGroup.set(rootId, root);
-      linkByGroup.set(rootId, link);
-    }
-
-    const strict = !settings.avMatch.fallbackToDefault;
-    if (groups.length) {
-      const snapshot: FileListSnapshot = {
-        kind: 'bt',
-        treeHash: groups.map((group) => group.rootId).join('|'),
-        groups,
-        checkedIds: [],
-        buttonDisabled: false,
-        truncated: parseTruncated,
-      };
-      const plan = buildMatchPlan(snapshot, settings.avMatch, btLinks);
-      matchSummary = toMatchSummary(plan);
-      matchText = plan.summary;
-      if (plan.status === 'skipped') {
-        // 文件树截断等异常：与页面自动化同一套语义——严格暂停、回退整包，
-        // 绝不带着残缺信息去勾选
-        for (const spec of specs) {
-          if (strict && BT_LINK.test(spec.url)) spec.skippedUnmatched = true;
-        }
-      } else {
-        for (const group of plan.groups) {
-          const spec = specs.find((item) => item.url === linkByGroup.get(group.rootId));
-          if (!spec) continue;
-          const root = rootByGroup.get(group.rootId);
-          const selection = selectSubFiles(
-            group,
-            filesByGroup.get(group.rootId) ?? [],
-            Number(root?.file_size ?? 0) || 0,
-            plan.policy,
-          );
-          spec.name = root?.name;
-          spec.totalFileCount = Number(root?.file_count ?? 0) || undefined;
-          if (selection.skippedUnmatched) {
-            spec.skippedUnmatched = true;
-          } else {
-            spec.subFileIndex = selection.subFileIndex || undefined;
-            spec.fileSize = selection.fileSize || undefined;
-          }
-        }
-      }
-    }
-    if (noTreeLinks.length) {
-      const note = `${noTreeLinks.length} 个链接没有 BT 文件树，已跳过番号匹配整包发送`;
-      matchText = matchText ? `${matchText}；${note}` : note;
+      rootIdByLink.set(task.link, rootId);
     }
   }
 
-  const skipped = specs.filter((spec) => spec.skippedUnmatched);
-  const creatable = specs.filter((spec) => !spec.skippedUnmatched);
-  // 只报真正被跳过的链接：group.status 为 ambiguous 时仍会选出文件，
-  // 用 MatchSummary.unmatchedRoots 会把已建任务的链接说成未匹配
-  const unmatchedLabels = skipped.map((spec) => spec.name || shortLinkLabel(spec.url));
+  let matchSummary: MatchSummary | undefined;
+  let matchText = '';
+  const strict = !settings.avMatch.fallbackToDefault;
+
+  if (settings.avMatch.enabled && groups.length) {
+    const snapshot: FileListSnapshot = {
+      kind: 'bt',
+      treeHash: groups.map((group) => group.rootId).join('|'),
+      groups,
+      checkedIds: [],
+      buttonDisabled: false,
+      truncated: parseTruncated,
+    };
+    const plan = buildMatchPlan(snapshot, settings.avMatch, btLinks);
+    matchSummary = toMatchSummary(plan);
+    matchText = plan.summary;
+
+    if (plan.status === 'skipped') {
+      // 文件树截断等异常：与页面自动化同一套语义——严格暂停、回退整包，
+      // 绝不带着残缺信息去勾选
+      for (const task of tasks) {
+        if (task.kind !== 'bt') continue;
+        task.selectionDisabled = task.truncated;
+        task.skippedUnmatched = strict;
+        task.preselectedIds = strict ? [] : task.files.map((file) => file.id);
+        task.wholePackageDefault = !strict;
+        task.note = plan.summary;
+      }
+    } else {
+      const groupByRoot = new Map(plan.groups.map((group) => [group.rootId, group]));
+      for (const task of tasks) {
+        if (task.kind !== 'bt') continue;
+        const rootId = rootIdByLink.get(task.link);
+        const group = rootId ? groupByRoot.get(rootId) : undefined;
+        if (!group) continue;
+        const root = rootByGroup.get(group.rootId);
+        const selection = selectSubFiles(
+          group,
+          filesByGroup.get(group.rootId) ?? [],
+          Number(root?.file_size ?? 0) || 0,
+          plan.policy,
+        );
+        task.matchStatus = group.status;
+        task.selectionDisabled = task.truncated;
+        // 回退模式下未命中的任务保留整包：预选全部文件（与不传 sub_file_index 等价），
+        // 用户在确认窗口里仍可取消勾选
+        task.preselectedIds = plan.preserveRootIds.includes(group.rootId)
+          ? task.files.map((file) => file.id)
+          : [...group.selectedIds];
+        if (selection.skippedUnmatched) {
+          task.skippedUnmatched = true;
+        } else {
+          task.subFileIndex = selection.subFileIndex || undefined;
+          task.selectedFileSize = selection.fileSize;
+        }
+        if (group.status !== 'matched') {
+          task.note =
+            group.status === 'no-code'
+              ? '未识别到番号'
+              : group.status === 'ambiguous'
+                ? '番号不唯一，未自动勾选'
+                : '未匹配到番号文件';
+        }
+      }
+    }
+  } else if (needFiles) {
+    // 未启用番号匹配：确认窗口默认全选；文件树被截断时只能整包下载
+    for (const task of tasks) {
+      if (task.kind !== 'bt') continue;
+      task.preselectedIds = task.files.map((file) => file.id);
+      task.selectionDisabled = task.truncated;
+      task.wholePackageDefault = task.truncated;
+      if (task.truncated) task.note = '文件列表不完整，只能整包下载';
+    }
+  }
+
+  if (noTreeLinks.length) {
+    const note = `${noTreeLinks.length} 个链接没有 BT 文件树，已跳过番号匹配，将整包下载`;
+    matchText = matchText ? `${matchText}；${note}` : note;
+  }
+
+  return { ok: true, analysis: { tasks, matchSummary, matchText } };
+}
+
+async function loadConfirmPaths(
+  xunleiUrl: string,
+  space: string,
+  configuredPath: string,
+  parentFolderId: string,
+): Promise<ConfirmPath[]> {
+  const paths: ConfirmPath[] = [];
+  try {
+    const entries = await fetchDownloadPaths(xunleiUrl, space);
+    for (const entry of entries ?? []) {
+      const record = entry as Record<string, unknown>;
+      const params = (record.params ?? {}) as Record<string, unknown>;
+      const id = String(record.Id ?? '');
+      const rawPath = String(record.RealPath ?? params.RealPath ?? record.FileName ?? '');
+      const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
+      const name = String(record.FileName ?? path);
+      if (!id || !path || paths.some((item) => item.id === id)) continue;
+      paths.push({ id, path, name });
+    }
+  } catch (error) {
+    console.warn('[background] 读取迅雷下载目录失败:', error);
+  }
+  if (parentFolderId && configuredPath && !paths.some((item) => item.id === parentFolderId)) {
+    paths.unshift({
+      id: parentFolderId,
+      path: configuredPath.length > 1 ? configuredPath.replace(/\/+$/, '') : configuredPath,
+      name: configuredPath.split('/').filter(Boolean).pop() || configuredPath,
+    });
+  }
+  return paths;
+}
+
+/** 确认窗口所需的精简任务视图，不包含接口令牌与设置 */
+function toConfirmTask(task: ApiTaskPlan): ConfirmTask {
+  return {
+    link: task.link,
+    label: shortLinkLabel(task.link),
+    kind: task.kind,
+    name: task.name || shortLinkLabel(task.link),
+    size: task.size || 0,
+    totalFileCount: task.totalFileCount ?? task.files.length,
+    files: task.files.map((file) => ({
+      id: file.id,
+      name: file.name,
+      path: file.path,
+      size: file.size,
+      fileIndex: file.fileIndex,
+    })),
+    preselectedIds: task.kind === 'bt' ? [...task.preselectedIds] : [],
+    selectionDisabled: task.kind === 'bt' ? task.selectionDisabled : false,
+    wholePackageDefault: task.kind === 'direct' ? true : task.wholePackageDefault,
+    matchStatus: task.matchStatus,
+    note: task.note,
+  };
+}
+
+/**
+ * 接口模式 + 确认后下载：解析并预选后打开扩展自己的确认窗口。
+ * 此时还没有创建任何任务，历史先记为暂停/等待确认。
+ */
+async function prepareApiConfirmation(
+  links: string[],
+  settings: XunleiSettings,
+  historyId: string,
+  options: SendOptions,
+  context: ApiContext,
+): Promise<SendOutcome> {
+  const analyzed = await analyzeApiLinks(links, settings, true);
+  if (!analyzed.ok) {
+    const outcome: SendOutcome = { ...analyzed.outcome, pathApplied: context.pathApplied };
+    await finishEntry(historyId, {
+      status: 'failed',
+      stage: outcome.stage,
+      code: outcome.code,
+      message: outcome.message,
+      pathApplied: context.pathApplied,
+    });
+    if (options.notify) await showSendResult(outcome, settings, links);
+    return outcome;
+  }
+
+  const { tasks, matchSummary, matchText } = analyzed.analysis;
+  const confirmTasks = tasks.map(toConfirmTask);
+  const configuredPath = settings.downloadPath.trim();
+  const paths = await loadConfirmPaths(
+    settings.xunleiUrl,
+    context.space,
+    configuredPath,
+    context.parentFolderId,
+  );
+  const parentFolderId = context.parentFolderId || paths[0]?.id || '';
+  const displayConfigured =
+    configuredPath.length > 1 ? configuredPath.replace(/\/+$/, '') : configuredPath;
+  const defaultPath =
+    paths.find((item) => item.id === parentFolderId)?.path || displayConfigured || '迅雷默认目录';
+  const pending: PendingConfirmation = {
+    id: createConfirmId(),
+    historyId,
+    source: options.source,
+    notify: options.notify,
+    links: [...links],
+    createdAt: Date.now(),
+    url: settings.xunleiUrl,
+    space: context.space,
+    tasks: confirmTasks,
+    paths,
+    parentFolderId,
+    path: defaultPath,
+    pathApplied: context.pathApplied,
+    match: matchSummary,
+    matchText,
+    message: matchText || '请选择要下载的文件与保存位置',
+  };
+
+  await savePendingConfirmation(pending);
+
+  try {
+    const win = await chrome.windows.create({
+      url: chrome.runtime.getURL(`confirm.html?id=${encodeURIComponent(pending.id)}`),
+      type: 'popup',
+      width: 560,
+      height: 780,
+      focused: true,
+    });
+    if (!win?.id) throw new Error('浏览器未返回窗口');
+    await setPendingWindowId(pending.id, win.id);
+    // 浏览器缩放会同比缩小扩展页面的 CSS 视口；按缩放倍数放大窗口，
+    // 让确认界面在 150%/200% 缩放下仍接近 560px 的设计宽度
+    try {
+      const [tab] = await chrome.tabs.query({ windowId: win.id });
+      const zoom = tab?.id != null ? await chrome.tabs.getZoom(tab.id) : 1;
+      if (zoom > 1.05) {
+        await chrome.windows.update(win.id, {
+          width: Math.min(1000, Math.round(560 * zoom)),
+          height: Math.min(1000, Math.round(760 * zoom)),
+        });
+      }
+    } catch (error) {
+      console.warn('[background] 按缩放调整确认窗口大小失败:', error);
+    }
+  } catch (error) {
+    await deletePendingConfirmation(pending.id);
+    const message = `打开确认窗口失败：${(error as Error).message || '未知错误'}`;
+    const outcome: SendOutcome = {
+      stage: 'confirm-download',
+      ok: false,
+      code: 'tab-open-failed',
+      message,
+      pathApplied: context.pathApplied,
+      match: matchSummary,
+    };
+    await finishEntry(historyId, {
+      status: 'failed',
+      stage: 'confirm-download',
+      code: 'tab-open-failed',
+      message,
+      pathApplied: context.pathApplied,
+      match: matchSummary,
+    });
+    if (options.notify) await showSendResult(outcome, settings, links);
+    return outcome;
+  }
+
+  const outcome: SendOutcome = {
+    stage: 'confirm-download',
+    ok: true,
+    message: '已打开确认窗口，请选择要下载的文件与保存位置',
+    pathApplied: context.pathApplied,
+    match: matchSummary,
+  };
+  await finishEntry(historyId, {
+    status: 'paused',
+    stage: 'confirm-download',
+    message: `等待确认：${outcome.message}`,
+    pathApplied: context.pathApplied,
+    match: matchSummary,
+  });
+  return outcome;
+}
+
+/** 确认窗口提交：重新校验勾选，再真正调用 drive/v1/task 建任务 */
+async function submitConfirmation(data: {
+  id: string;
+  selections: ConfirmSelectionInput[];
+  parentFolderId?: string;
+}): Promise<SendOutcome> {
+  const pending = await getPendingConfirmation(data.id);
+  if (!pending) {
+    return {
+      stage: 'confirm-download',
+      ok: false,
+      code: 'unknown',
+      message: '确认已失效或已完成，请重新发送链接',
+    };
+  }
+
+  const selections = Array.isArray(data.selections) ? data.selections : [];
+  const submission = buildConfirmCreateSpecs(pending, selections);
+
+  if (!submission.specs.length) {
+    await deletePendingConfirmation(pending.id);
+    const message = '没有选择任何要下载的文件，未创建任务';
+    await finishEntry(pending.historyId, {
+      status: 'paused',
+      stage: 'match',
+      code: 'av-unmatched',
+      message,
+      pathApplied: pending.pathApplied,
+      match: pending.match,
+    });
+    return {
+      stage: 'match',
+      ok: true,
+      code: 'av-unmatched',
+      message,
+      pathApplied: pending.pathApplied,
+      paused: { reason: 'unmatched' },
+      match: pending.match,
+    };
+  }
+
+  const allowedFolders = new Set(pending.paths.map((item) => item.id));
+  const requested = data.parentFolderId ?? '';
+  const parentFolderId = allowedFolders.has(requested) ? requested : pending.parentFolderId;
+  const pathLabel =
+    pending.paths.find((item) => item.id === parentFolderId)?.path || pending.path;
+  const pathApplied: PathApplied = parentFolderId
+    ? { needed: true, applied: true, resolvedPath: pathLabel }
+    : { needed: false, applied: true };
+
+  // 先移除 pending，避免窗口重复提交；创建失败后用户可重新发送
+  await deletePendingConfirmation(pending.id);
 
   const taskIds: string[] = [];
   const failures: string[] = [];
-  for (const spec of creatable) {
+  for (const spec of submission.specs) {
     try {
-      const created = await createTask(settings.xunleiUrl, {
-        space,
+      const created = await createTask(pending.url, {
+        space: pending.space,
         url: spec.url,
         parentFolderId,
         name: spec.name,
@@ -664,9 +1012,160 @@ async function sendViaApi(
       });
       const id = created.task?.id ?? (created as { id?: string }).id ?? '';
       if (id) taskIds.push(id);
-      else failures.push(shortLinkLabel(spec.url));
+      else failures.push(spec.name || shortLinkLabel(spec.url));
     } catch (error) {
-      failures.push(`${shortLinkLabel(spec.url)}（${apiErrorMeta(error).message}）`);
+      failures.push(`${spec.name || shortLinkLabel(spec.url)}（${apiErrorMeta(error).message}）`);
+    }
+  }
+
+  if (!taskIds.length) {
+    const message = `创建任务失败：${failures[0] ?? '迅雷未返回任务'}`;
+    const outcome: SendOutcome = {
+      stage: 'done',
+      ok: false,
+      code: 'unknown',
+      message,
+      pathApplied,
+      match: pending.match,
+    };
+    await finishEntry(pending.historyId, {
+      status: 'failed',
+      stage: 'done',
+      code: 'unknown',
+      message,
+      pathApplied,
+      match: pending.match,
+    });
+    if (pending.notify) {
+      await ensureSettingsLoaded();
+      await showSendResult(outcome, getSettings(), pending.links);
+    }
+    return outcome;
+  }
+
+  const complete = failures.length === 0 && submission.skipped.length === 0;
+  const outcome: SendOutcome = {
+    stage: 'done',
+    ok: true,
+    message: [
+      complete
+        ? `已发送 ${taskIds.length} 个任务到 NAS`
+        : [
+            `已发送 ${taskIds.length} 个任务`,
+            submission.skipped.length ? `${submission.skipped.length} 个未选择已跳过` : '',
+            failures.length ? `${failures.length} 个失败` : '',
+          ]
+            .filter(Boolean)
+            .join('，'),
+      failures.length ? `失败：${failures.slice(0, 2).join('、')}` : '',
+      pending.matchText ?? '',
+    ]
+      .filter(Boolean)
+      .join('·'),
+    pathApplied,
+    taskIds,
+    paused: undefined,
+    match: pending.match,
+  };
+  await finishEntry(pending.historyId, {
+    status: complete ? 'ok' : 'partial',
+    stage: 'done',
+    message: outcome.message,
+    pathApplied,
+    match: pending.match,
+  });
+  if (pending.notify) {
+    await ensureSettingsLoaded();
+    await showSendResult(outcome, getSettings(), pending.links);
+  }
+  return outcome;
+}
+
+async function cancelConfirmation(id: string): Promise<void> {
+  const pending = await getPendingConfirmation(id);
+  if (!pending) return;
+  await deletePendingConfirmation(id);
+  await finishEntry(pending.historyId, {
+    status: 'paused',
+    stage: 'confirm-download',
+    message: '已取消确认，未创建下载',
+    pathApplied: pending.pathApplied,
+  });
+}
+
+/**
+ * 接口模式：解析 drive/v1/resource/list + 番号匹配后直接调 drive/v1/task 建任务，
+ * 不打开迅雷页面、不抢焦点。确认模式下改为先打开扩展自己的确认窗口。
+ *
+ * 与页面自动化模式共用 utils/avMatch.ts 的纯函数，勾选结果编码成迅雷的
+ * sub_file_index 索引串（连续段折叠为 "a-b"）。区别在于接口模式每个链接是独立
+ * 任务，严格模式下未命中的链接单独暂停，不会像单个「立即下载」按钮那样连累整单。
+ */
+async function sendViaApi(
+  links: string[],
+  settings: XunleiSettings,
+  historyId: string,
+  options: SendOptions,
+): Promise<SendOutcome> {
+  const settle = async (
+    outcome: SendOutcome,
+    status: 'ok' | 'failed' | 'partial' | 'paused',
+  ): Promise<SendOutcome> => {
+    await finishEntry(historyId, {
+      status,
+      stage: outcome.stage,
+      code: outcome.code,
+      message: outcome.message,
+      match: outcome.match,
+    });
+    if (options.notify) await showSendResult(outcome, settings, links);
+    return outcome;
+  };
+
+  const resolved = await resolveApiContext(links, settings, options);
+  if (!resolved.ok) {
+    return settle(resolved.outcome, resolved.outcome.paused ? 'paused' : 'failed');
+  }
+  const { space, parentFolderId, pathApplied } = resolved.context;
+
+  if (settings.downloadMode === 'confirm') {
+    return prepareApiConfirmation(links, settings, historyId, options, resolved.context);
+  }
+
+  const analyzed = await analyzeApiLinks(links, settings, settings.avMatch.enabled);
+  if (!analyzed.ok) {
+    return settle({ ...analyzed.outcome, pathApplied }, 'failed');
+  }
+  const { tasks, matchSummary, matchText } = analyzed.analysis;
+
+  const skipped = tasks.filter((task) => task.skippedUnmatched);
+  const creatable = tasks.filter((task) => !task.skippedUnmatched);
+  // 只报真正被跳过的链接：group.status 为 ambiguous 时仍会选出文件，
+  // 用 MatchSummary.unmatchedRoots 会把已建任务的链接说成未匹配
+  const unmatchedLabels = skipped.map((task) => task.name || shortLinkLabel(task.link));
+  // 文件树截断时 plan 被跳过，保持原行为：不带 name/size 直接整包建任务
+  const useBtMeta = Boolean(matchSummary && !matchSummary.skipped);
+
+  const taskIds: string[] = [];
+  const failures: string[] = [];
+  for (const task of creatable) {
+    const btMeta = useBtMeta && task.kind === 'bt' && task.files.length > 0;
+    try {
+      const created = await createTask(settings.xunleiUrl, {
+        space,
+        url: task.link,
+        parentFolderId,
+        name: btMeta ? task.name : undefined,
+        fileName: btMeta ? task.name : undefined,
+        fileSize: btMeta ? task.selectedFileSize : undefined,
+        totalFileCount: btMeta ? task.totalFileCount : undefined,
+        subFileIndex: btMeta ? task.subFileIndex : undefined,
+      });
+      const id = created.task?.id ?? (created as { id?: string }).id ?? '';
+      if (id) taskIds.push(id);
+      else failures.push(shortLinkLabel(task.link));
+    } catch (error) {
+      failures.push(`${shortLinkLabel(task.link)}（${apiErrorMeta(error).message}）`);
     }
   }
 
@@ -730,7 +1229,6 @@ async function sendViaApi(
   };
   return settle(outcome, complete ? 'ok' : skipped.length && !failures.length ? 'paused' : 'partial');
 }
-
 async function runSend(
   rawLinks: string[],
   options: SendOptions,
