@@ -581,24 +581,19 @@ function closeWindow(): void {
 </template>
 
 <style scoped>
+/* 自绘窗口即整个弹窗视口，不留外层容器边距 */
 .page {
   box-sizing: border-box;
   height: 100%;
-  padding: 12px;
-  display: flex;
-  justify-content: center;
 }
 
 .dialog {
   width: 100%;
-  max-width: 560px;
-  max-height: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
 }
 
 .dialog-head {
@@ -999,10 +994,6 @@ function closeWindow(): void {
 }
 
 @media (max-width: 460px) {
-  .page {
-    padding: 8px;
-  }
-
   .dialog-body {
     padding: 10px 12px 8px;
   }
