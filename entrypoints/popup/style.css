@@ -12,6 +12,11 @@ body {
   background: #fff;
 }
 
+/* Chrome 的 popup 视口高度不随内容收缩（高缩放下尤甚），需要整链撑满视口，
+   让 App.vue 里的页脚能吸底而不是悬在内容下方 */
 #app {
   min-width: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }

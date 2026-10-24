@@ -71,6 +71,9 @@ watch(activeTab, () => {
 <style scoped>
 .popup {
   box-sizing: border-box;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: 560px;
   margin: 0 auto;
@@ -110,8 +113,25 @@ watch(activeTab, () => {
   margin-bottom: 10px;
 }
 
+.tabs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .tabs :deep(.ant-tabs-nav) {
   margin-bottom: 8px;
+}
+
+/* 内容区随弹窗剩余高度拉伸，空状态提示得以在剩余空间内垂直居中 */
+.tabs :deep(.ant-tabs-content-holder),
+.tabs :deep(.ant-tabs-content),
+.tabs :deep(.ant-tabs-tabpane) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .tabs :deep(.ant-tabs-tabpane) {
@@ -122,8 +142,8 @@ watch(activeTab, () => {
   display: flex;
   justify-content: center;
   gap: 16px;
-  margin-top: 6px;
-  padding-top: 2px;
+  margin-top: auto;
+  padding-top: 8px;
   border-top: 1px solid #f0f0f0;
 }
 </style>

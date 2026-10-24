@@ -261,6 +261,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 1;
   min-width: 0;
 }
 
@@ -279,9 +280,18 @@ onBeforeUnmount(() => {
   margin-left: 6px;
 }
 
+/* auto 上下边距让空提示在拉伸后的面板里垂直居中（a-spin 有两层包装需要一起拉伸） */
+.tasks :deep(.ant-spin-nested-loading),
+.tasks :deep(.ant-spin-container) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .empty {
-  margin: 0;
-  padding: 28px 0;
+  margin: auto 0;
+  padding: 24px 0;
   text-align: center;
   font-size: 13px;
   color: rgba(0, 0, 0, 0.35);
