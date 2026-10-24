@@ -17,6 +17,29 @@
 const TOKEN_SESSION_KEY = 'nas_xunlei_pan_auth';
 /** 提前刷新窗口，避免卡在过期边界 */
 const TOKEN_REFRESH_SKEW_SECONDS = 120;
+/** exp 解析不出来（=0）时的保守缓存时长：宁可多刷新一次，不要把未知过期当成永不过期 */
+const TOKEN_UNKNOWN_EXP_TTL_SECONDS = 3600;
+/** 单次接口调用 / 首页拉取的超时：NAS 半开连接时不能让调用方永久挂起 */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** fetch + 超时：超时后中断，避免半开连接挂死整个发送链路 */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
 
 export type XunleiPhase =
   | 'PHASE_TYPE_PENDING'
@@ -171,6 +194,8 @@ interface CachedToken {
   base: string;
   token: string;
   exp: number;
+  /** 缓存写入时刻（秒），exp 解析失败时用于限制保守有效期 */
+  at: number;
 }
 
 let memoryToken: CachedToken | null = null;
@@ -205,24 +230,25 @@ const UIAUTH_JWT = /uiauth[^"']*?["']([A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Z
 async function mintToken(base: string): Promise<CachedToken> {
   let html: string;
   try {
-    const response = await fetch(`${base}/`, { credentials: 'omit', cache: 'no-store' });
+    const response = await fetchWithTimeout(`${base}/`, { credentials: 'omit', cache: 'no-store' });
     if (!response.ok) {
       throw new XunleiApiError('token-missing', `读取迅雷首页失败（HTTP ${response.status}）`, response.status);
     }
     html = await response.text();
   } catch (error) {
     if (error instanceof XunleiApiError) throw error;
+    if (isAbortError(error)) throw new XunleiApiError('unreachable', '读取迅雷首页超时');
     throw new XunleiApiError('unreachable', '无法访问 NAS 迅雷地址');
   }
   const matched = UIAUTH_JWT.exec(html);
-  if (!matched) {
+  if (!matched?.[1]) {
     throw new XunleiApiError(
       'token-missing',
       '首页里没有找到 uiauth 令牌，迅雷套件版本可能已变化，请改用页面发送模式',
     );
   }
   const token = matched[1];
-  const cached: CachedToken = { base, token, exp: decodeJwtExp(token) };
+  const cached: CachedToken = { base, token, exp: decodeJwtExp(token), at: Math.floor(Date.now() / 1000) };
   await writeCachedToken(cached);
   return cached;
 }
@@ -235,7 +261,10 @@ export async function getPanAuth(base: string, force = false): Promise<string> {
     if (
       cached?.base === base &&
       cached.token &&
-      (!cached.exp || cached.exp - now > TOKEN_REFRESH_SKEW_SECONDS)
+      (cached.exp
+        ? cached.exp - now > TOKEN_REFRESH_SKEW_SECONDS
+        : // exp 解析不出来：只信一小段保守时长，剩余太短就刷新
+          cached.at > 0 && now - cached.at < TOKEN_UNKNOWN_EXP_TTL_SECONDS)
     ) {
       return cached.token;
     }
@@ -247,7 +276,11 @@ export async function getPanAuth(base: string, force = false): Promise<string> {
 /** 主动失效缓存（收到 401/403 时调用） */
 export function invalidatePanAuth(): void {
   memoryToken = null;
-  chrome.storage.session.remove(TOKEN_SESSION_KEY).catch(() => {});
+  try {
+    chrome.storage.session.remove(TOKEN_SESSION_KEY).catch(() => {});
+  } catch {
+    /* storage.session 不可用时只清内存缓存 */
+  }
 }
 
 type QueryValue = string | number | boolean | undefined | null | string[];
@@ -314,7 +347,7 @@ export async function xunleiRequest<T>(
       headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(options.body);
     }
-    return fetch(url, init);
+    return fetchWithTimeout(url, init);
   };
 
   const token = await getPanAuth(base);
@@ -325,7 +358,12 @@ export async function xunleiRequest<T>(
       invalidatePanAuth();
       response = await call(await getPanAuth(base, true));
     }
-  } catch {
+  } catch (error) {
+    // 重试路径上刷新令牌可能抛 token-missing（首页已取不到令牌），不能吞成 unreachable
+    if (error instanceof XunleiApiError) throw error;
+    if (isAbortError(error)) {
+      throw new XunleiApiError('unreachable', `访问迅雷接口超时（${REQUEST_TIMEOUT_MS / 1000} 秒）`);
+    }
     throw new XunleiApiError('unreachable', '无法访问 NAS 迅雷接口');
   }
 
@@ -359,7 +397,7 @@ export async function resolveDeviceSpace(xunleiUrl: string): Promise<string> {
   const raw = await xunleiRequest<string>(xunleiUrl, 'device/authlogin');
   if (typeof raw !== 'string') return '';
   const matched = /[?&]space=([^&]+)/.exec(raw);
-  return matched ? decodeURIComponent(matched[1]) : '';
+  return matched?.[1] ? decodeURIComponent(matched[1]) : '';
 }
 
 const SPACE_TTL_MS = 10 * 60_000;
@@ -534,7 +572,8 @@ export async function resolveFolderIdByPath(
     with: ['withCategoryDiskMountPath', 'withCategoryDownloadPath'],
   });
   const matched: string[] = [];
-  let level = roots.files;
+  // 服务端会整个省略空数组字段（ListFilesResult.files 同 ListTasksResult.tasks 的省略行为）
+  let level: XunleiFile[] = roots.files ?? [];
   let parentId = '';
 
   for (const [index, segment] of segments.entries()) {
@@ -546,7 +585,7 @@ export async function resolveFolderIdByPath(
     parentId = hit.id;
     if (index === segments.length - 1) return { id: hit.id, matched, missing: '' };
     const next = await listFiles(xunleiUrl, { space, parentId: hit.id, limit: 200 });
-    level = next.files;
+    level = next.files ?? [];
   }
   return { id: parentId, matched, missing: '' };
 }
@@ -588,7 +627,10 @@ export interface FlatResourceFile {
   /** 含各级祖先目录名的路径，供番号匹配识别"文件夹含番号、文件名不含"的包 */
   path: string;
   size: number;
-  /** 迅雷建任务用的文件序号 */
+  /**
+   * 迅雷建任务用的文件序号。id 末段也推不出数字时为 -1（无法编码），
+   * 选择/编码阶段必须把 -1 剔除，绝不能兜底成 0（多个 -1 会折叠成 "0" 只下 0 号文件）。
+   */
   fileIndex: number;
   mimeType: string;
 }
@@ -616,7 +658,7 @@ export function flattenResourceFiles(root: ResourceNode): FlatResourceFile[] {
           ? node.file_index
           : Number.isFinite(lastSegment)
             ? lastSegment
-            : 0,
+            : -1,
       mimeType: node.meta?.mime_type ?? '',
     });
   };

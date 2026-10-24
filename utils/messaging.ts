@@ -90,7 +90,6 @@ export interface TaskSummary {
   /** NAS 上的实际路径 */
   realPath: string;
   message: string;
-  updatedAt: string;
 }
 
 export interface ListTasksMessage {
@@ -139,6 +138,17 @@ export interface ConfirmCancelMessage {
   data: { id: string };
 }
 
+/** 清空发送记录：写入统一走 background 单一队列，避免与监控回写互相覆盖 */
+export interface ClearHistoryMessage {
+  type: 'history';
+  action: 'clear';
+}
+
+export interface ClearHistoryResponse {
+  ok: boolean;
+  message?: string;
+}
+
 export type ExtensionMessage =
   | SendLinksMessage
   | OpenXunleiMessage
@@ -149,4 +159,5 @@ export type ExtensionMessage =
   | OperateTaskMessage
   | DeleteTasksMessage
   | ConfirmSubmitMessage
-  | ConfirmCancelMessage;
+  | ConfirmCancelMessage
+  | ClearHistoryMessage;

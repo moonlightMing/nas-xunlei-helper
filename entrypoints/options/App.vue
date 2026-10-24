@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { message, Modal } from 'ant-design-vue';
-import {
-  clearHistory,
-  listHistory,
-  watchHistory,
-  type SendHistoryEntry,
-} from '@/utils/history';
+import { listHistory, watchHistory, type SendHistoryEntry } from '@/utils/history';
 import type {
   DiagnoseCheck,
   ListDirResponse,
@@ -347,25 +342,45 @@ const handleSelectDir = (_keys: unknown, info: { node?: unknown }): void => {
   message.success(`已选择 ${data.path}`);
 };
 
+const sendHistoryLinks = async (item: SendHistoryEntry, force: boolean): Promise<void> => {
+  const response = (await chrome.runtime.sendMessage({
+    type: 'download',
+    action: 'sendLinks',
+    data: { links: item.links, source: 'history', force },
+  })) as SendLinksResponse | undefined;
+
+  if (!response) {
+    message.error('后台无响应，请重试');
+    return;
+  }
+  // 重复资源被拦：给出与 popup 一致的「仍然发送」二级确认，而不是只提示
+  if (!force && response.paused && response.code === 'duplicate-task') {
+    Modal.confirm({
+      title: 'NAS 上已有相同资源的任务',
+      content: `${response.message}。重复发送会顶掉旧任务记录（已下载文件保留，新任务会落到带序号的目录）。`,
+      okText: '仍然发送',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        await sendHistoryLinks(item, true);
+      },
+    });
+    return;
+  }
+  if (response.code === 'busy' || response.paused) {
+    message.warning(response.message);
+  } else if (response.ok) {
+    message.success(response.message);
+  } else {
+    message.error(response.message);
+  }
+};
+
 const handleHistoryRetry = async (item: SendHistoryEntry): Promise<void> => {
   if (!item.links.length || retryingId.value) return;
   retryingId.value = item.id;
   try {
-    const response = (await chrome.runtime.sendMessage({
-      type: 'download',
-      action: 'sendLinks',
-      data: { links: item.links, source: 'history' },
-    })) as SendLinksResponse | undefined;
-
-    if (!response) {
-      message.error('后台无响应，请重试');
-    } else if (response.code === 'busy' || response.paused) {
-      message.warning(response.message);
-    } else if (response.ok) {
-      message.success(response.message);
-    } else {
-      message.error(response.message);
-    }
+    await sendHistoryLinks(item, false);
   } catch (error) {
     message.error((error as Error).message || '重试失败');
   } finally {
@@ -383,7 +398,8 @@ const handleClearHistory = () => {
     onOk: async () => {
       clearingHistory.value = true;
       try {
-        await clearHistory();
+        // 清空走 background 的单一写入队列，避免与监控回写互相覆盖
+        await chrome.runtime.sendMessage({ type: 'history', action: 'clear' });
         history.value = [];
         message.success('已清空发送记录');
       } finally {
@@ -600,7 +616,7 @@ function monitorText(item: SendHistoryEntry): string {
                 <div>
                   <div class="switch-label">下载任务监控</div>
                   <div class="switch-extra">
-                    发送后每分钟检查一次任务状态。需要保持迅雷页面打开；最多监控 24 小时，失败/完成结果会写入发送记录。
+                    发送后每分钟检查一次任务状态。页面自动化需保持迅雷页面打开，接口直连不依赖页面；最多监控 24 小时，失败/完成结果会写入发送记录。
                   </div>
                 </div>
                 <a-switch v-model:checked="form.monitorDownloads" />

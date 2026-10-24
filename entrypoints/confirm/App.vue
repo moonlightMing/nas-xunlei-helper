@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { message as antMessage } from 'ant-design-vue';
 import { classifyFileCategory, formatFileSize, getExtension } from '@/utils/avMatch';
 import {
   buildConfirmTree,
   getPendingConfirmation,
+  PENDING_TTL_MS,
   type ConfirmFile,
   type ConfirmSelectionInput,
   type ConfirmTask,
@@ -41,6 +42,8 @@ interface ResultState {
   title: string;
   message: string;
   showXunlei: boolean;
+  /** 后台保留了待确认状态，可直接重试提交 */
+  retryable?: boolean;
 }
 
 const theme = {
@@ -61,7 +64,8 @@ const result = ref<ResultState | null>(null);
 const selectedPath = ref('');
 const taskStates = reactive<Record<string, TaskState>>({});
 
-const stateOf = (index: number): TaskState => taskStates[String(index)];
+const stateOf = (index: number): TaskState =>
+  taskStates[String(index)] ?? { included: false, name: '', selected: new Set(), wholePackage: false, collapsed: [] };
 
 const isSingle = computed(() => pending.value?.tasks.length === 1);
 
@@ -95,7 +99,38 @@ function initialize(data: PendingConfirmation): void {
       collapsed,
     };
   });
+  startTtlCountdown(data);
 }
+
+// 30 分钟有效期只靠后台 SW 重启剪裁，窗口里要自己感知剩余时间并过期禁提交
+const expiresAt = ref(0);
+const expired = ref(false);
+const remainingText = ref('');
+let ttlTimer: number | undefined;
+
+function startTtlCountdown(data: PendingConfirmation): void {
+  expiresAt.value = data.createdAt + PENDING_TTL_MS;
+  expired.value = Date.now() >= expiresAt.value;
+  if (ttlTimer !== undefined) window.clearInterval(ttlTimer);
+  const tick = () => {
+    const rest = expiresAt.value - Date.now();
+    if (rest <= 0) {
+      expired.value = true;
+      remainingText.value = '已过期';
+      if (ttlTimer !== undefined) window.clearInterval(ttlTimer);
+      return;
+    }
+    const minutes = Math.floor(rest / 60_000);
+    const seconds = Math.floor((rest % 60_000) / 1000);
+    remainingText.value = `${minutes}:${String(seconds).padStart(2, '0')}`;
+  };
+  tick();
+  if (!expired.value) ttlTimer = window.setInterval(tick, 1000);
+}
+
+onBeforeUnmount(() => {
+  if (ttlTimer !== undefined) window.clearInterval(ttlTimer);
+});
 
 onMounted(async () => {
   void fitWindowToZoom();
@@ -288,7 +323,9 @@ const totalSelectedSizeText = computed(() =>
   totalSelectedSize.value > 0 ? sizeText(totalSelectedSize.value) : '大小未知',
 );
 
-const canSubmit = computed(() => !submitting.value && includedCount.value > 0);
+const canSubmit = computed(
+  () => !submitting.value && !expired.value && includedCount.value > 0,
+);
 
 function toneFor(file: ConfirmFile): string {
   return `cat-${classifyFileCategory(file.name)}`;
@@ -296,7 +333,9 @@ function toneFor(file: ConfirmFile): string {
 
 async function handleSubmit(): Promise<void> {
   const data = pending.value;
-  if (!data || submitting.value) return;
+  if (!data || submitting.value || expired.value) return;
+  // 从失败结果页重试时先清掉旧结果，回到编辑/提交态
+  result.value = null;
   const single = data.tasks.length === 1;
   const selections: ConfirmSelectionInput[] = data.tasks.map((task, index) => {
     const state = stateOf(index);
@@ -332,7 +371,7 @@ async function handleSubmit(): Promise<void> {
       action: 'submit',
       data: { id: data.id, selections, parentFolderId: selectedPath.value },
     })) as
-      | { ok?: boolean; message?: string; paused?: { reason?: string } }
+      | { ok?: boolean; message?: string; paused?: { reason?: string }; retryable?: boolean }
       | undefined;
     if (!response) {
       result.value = {
@@ -348,8 +387,11 @@ async function handleSubmit(): Promise<void> {
     result.value = {
       tone: ok ? 'ok' : paused ? 'warn' : 'error',
       title: ok ? '已发送到 NAS 迅雷' : paused ? '未创建下载' : '创建下载失败',
-      message: response.message || (ok ? '任务已创建，可到迅雷页面查看进度。' : '请稍后重试。'),
+      message:
+        response.message ||
+        (ok ? '任务已创建，可到迅雷页面查看进度。' : response.retryable ? '可重试提交。' : '请稍后重试。'),
       showXunlei: ok,
+      retryable: !ok && !paused && Boolean(response.retryable),
     };
   } catch (error) {
     result.value = {
@@ -413,6 +455,9 @@ function closeWindow(): void {
             <p class="state-title">{{ result.title }}</p>
             <p class="state-message">{{ result.message }}</p>
             <div class="result-actions">
+              <a-button v-if="result.retryable" type="primary" :loading="submitting" @click="handleSubmit">
+                重试提交
+              </a-button>
               <a-button v-if="result.showXunlei" type="primary" @click="handleOpenXunlei">
                 打开迅雷页面
               </a-button>
@@ -425,6 +470,9 @@ function closeWindow(): void {
           <header class="dialog-head">
             <span class="dialog-title">
               {{ isSingle ? '新建下载任务' : `确认下载（${pending.tasks.length} 个任务）` }}
+            </span>
+            <span class="dialog-ttl" :class="{ danger: expired || remainingText === '0:00' }">
+              {{ expired ? '确认已超时，请关闭后重新发送' : `有效期剩余 ${remainingText}` }}
             </span>
           </header>
 
@@ -593,11 +641,24 @@ function closeWindow(): void {
 
 .dialog-head {
   flex: none;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   height: 46px;
   border-bottom: 1px solid #f0f0f0;
+}
+
+.dialog-ttl {
+  position: absolute;
+  right: 14px;
+  font-size: 12px;
+  color: #8c8c8c;
+  white-space: nowrap;
+}
+
+.dialog-ttl.danger {
+  color: #cf1322;
 }
 
 .dialog-title {

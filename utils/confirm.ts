@@ -11,7 +11,8 @@ import { encodeSubFileIndex, type MatchSummary } from '@/utils/avMatch';
 import type { SendSource } from '@/utils/messaging';
 
 export const PENDING_CONFIRM_KEY = 'nas_xunlei_pending_confirm';
-const PENDING_TTL_MS = 30 * 60 * 1000;
+/** pending 有效期：确认页用它显示剩余时间并自行过期，不必等 SW 重启才剪裁 */
+export const PENDING_TTL_MS = 30 * 60 * 1000;
 
 export interface ConfirmFile {
   id: string;
@@ -210,12 +211,13 @@ export function buildConfirmTree(files: ConfirmFile[]): ConfirmTreeNode[] {
     let level = roots;
     let prefix = '';
     for (let index = 0; index < segments.length - 1; index += 1) {
-      prefix = prefix ? `${prefix}/${segments[index]}` : segments[index];
+      const segment = segments[index] ?? '';
+      prefix = prefix ? `${prefix}/${segment}` : segment;
       let node = dirs.get(prefix);
       if (!node) {
         node = {
           key: `dir:${prefix}`,
-          name: segments[index],
+          name: segment,
           path: prefix,
           isDir: true,
           size: 0,

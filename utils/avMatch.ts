@@ -201,12 +201,16 @@ const BLACKLIST_PREFIXES = new Set([
   'AV1', 'VP9', 'MP4', 'MKV', 'PPV', 'COM', 'NET', 'ORG', 'XYZ', 'WWW',
   'VIDEO', 'VIDEOS', 'MOVIE', 'MOVIES', 'CLIP', 'CLIPS', 'SAMPLE', 'SAMPLES',
   'TRAILER', 'TRAILERS', 'PREVIEW', 'PROMO', 'COLLECTION', 'PACK', 'SEASON',
-  'EPISODE', 'VOL', 'VOLUME', 'PART', 'DISC', 'FULL',
+  'EPISODE', 'EPISODES', 'VOL', 'VOLUME', 'PART', 'DISC', 'FULL',
+  // 通用文件名词：file01/track01/scene02/img_1234 这类序号名不是番号，
+  // 不拦会把"零候选→根名兜底"这条生命线堵死（严格模式整组误判未匹配）
+  'FILE', 'FILES', 'TRACK', 'TRACKS', 'SCENE', 'SCENES', 'IMAGE', 'IMAGES',
+  'IMG', 'PIC', 'PICS', 'PHOTO', 'PHOTOS', 'SCREEN', 'SCREENS', 'TOP',
 ]);
 
 const DOMAIN_SUFFIX = /^(?:com|net|org|xyz|me|vip|cc|tv|info|top|club|site|online|app|io|co|la|ws)\b/i;
 
-const FC2_PATTERN = /FC2[-_\s.]?(?:PPV[-_\s.]?)?(\d{5,8})(?:[-_](\d+|[A-Z]))?/gi;
+const FC2_PATTERN = /FC2[-_\s.]?(?:PPV[-_\s.]?)?(\d{5,8})(?!\d)(?:[-_](\d+|[A-Z]))?/gi;
 const TOKYO_HOT_PATTERN = /(?<![A-Za-z0-9])N\d{4}(?:[-_][A-Z]+)+(?![A-Za-z0-9])/gi;
 const TOKYO_HOT_BARE_PATTERN = /(?<![A-Za-z0-9])N\d{3,4}(?![A-Za-z0-9])/gi;
 const CARIBBEAN_PATTERN = /(?<![A-Za-z0-9])\d{6}[-_]\d{3}(?:[-_][A-Za-z0-9]+)?(?![A-Za-z0-9])/g;
@@ -318,7 +322,7 @@ function parseCanonicalCode(raw: string): ParsedCode | null {
   if (!value) return null;
 
   const uncensored = value.match(UNCENSORED_DATE_PATTERN);
-  if (uncensored) {
+  if (uncensored?.[1] && uncensored[2]) {
     const date = uncensored[1];
     const number = uncensored[2];
     return {
@@ -330,7 +334,7 @@ function parseCanonicalCode(raw: string): ParsedCode | null {
   }
 
   const fc2 = value.match(/^FC2[-_\s.]?(?:PPV[-_\s.]?)?(\d{5,8})(?:[-_.](\d+|[A-Z]))?$/i);
-  if (fc2) {
+  if (fc2?.[1]) {
     const number = fc2[1];
     const part = fc2[2] ? fc2[2].toUpperCase() : '';
     return {
@@ -343,7 +347,7 @@ function parseCanonicalCode(raw: string): ParsedCode | null {
   }
 
   const tokyo = value.match(/^N(\d{3,4})(?:[-_].*)?$/i);
-  if (tokyo) {
+  if (tokyo?.[1]) {
     const number = tokyo[1];
     return {
       code: `N${number}`,
@@ -354,7 +358,7 @@ function parseCanonicalCode(raw: string): ParsedCode | null {
   }
 
   const caribbean = value.match(/^(\d{6})[-_.\s]?(\d{3})(?:[-_.\s](.+))?$/);
-  if (caribbean) {
+  if (caribbean?.[1] && caribbean[2]) {
     const date = caribbean[1];
     const number = caribbean[2];
     const part = caribbean[3] ? caribbean[3].toUpperCase() : '';
@@ -368,7 +372,7 @@ function parseCanonicalCode(raw: string): ParsedCode | null {
   }
 
   const digitPrefix = value.match(/^\d{3,4}([A-Za-z]{2,8})[-_.\s]?(\d{2,5})(?:[-_.\s]([A-Za-z]{1,3}\d*|\d{1,3}))?$/);
-  if (digitPrefix) {
+  if (digitPrefix?.[1] && digitPrefix[2]) {
     const prefix = digitPrefix[1].toUpperCase();
     const number = digitPrefix[2];
     const part = digitPrefix[3] ? digitPrefix[3].toUpperCase() : '';
@@ -384,7 +388,7 @@ function parseCanonicalCode(raw: string): ParsedCode | null {
   }
 
   const standard = value.match(/^([A-Za-z]{2,10})[-_.\s]?(\d{2,7})(?:[-_.\s]([A-Za-z]{1,3}\d*|\d{1,3}))?$/);
-  if (standard) {
+  if (standard?.[1] && standard[2]) {
     let prefix = standard[1].toUpperCase();
     const number = standard[2];
     const part = standard[3] ? standard[3].toUpperCase() : '';
@@ -401,7 +405,7 @@ function parseCanonicalCode(raw: string): ParsedCode | null {
   }
 
   const prefixDigits = value.match(/^([A-Za-z]{1,4}\d{1,3})[-_.\s](\d{2,7})(?:[-_.\s]([A-Za-z]{1,3}\d*|\d{1,3}))?$/);
-  if (prefixDigits) {
+  if (prefixDigits?.[1] && prefixDigits[2]) {
     const prefix = prefixDigits[1].toUpperCase();
     const number = prefixDigits[2];
     const part = prefixDigits[3] ? prefixDigits[3].toUpperCase() : '';
@@ -649,7 +653,12 @@ function boundaryMatch(source: string, target: ParsedCode): boolean {
   }
 
   if (/^\d+$/.test(prefix)) {
-    return normalizeAvId(source).includes(normalizeAvId(target.code));
+    // 数字前缀（加勒比/一本道等）：带边界匹配。纯 includes 会让 "1060819917"
+    // 误命中 "060819-917"（去分隔符后是子串），把无关文件卷进勾选
+    const numericRe = new RegExp(
+      `(?:^|[^A-Za-z0-9])0*${escapeRegExp(stripLeadingZeros(target.prefix))}[-_.\\s]?0*${number}(?![0-9])`,
+    );
+    return numericRe.test(source);
   }
 
   const re = new RegExp(
@@ -767,7 +776,7 @@ function detectTargets(
     if (top && top.hits > 0 && (!second || top.hits > second.hits)) {
       return { targets: [{ parsed: top.parsed, source: 'auto', inheritFromRoot: true }] };
     }
-    if (scored.length === 1 && top.hits === 0 && top.noCodeCount > 0) {
+    if (scored.length === 1 && top?.hits === 0 && top.noCodeCount > 0) {
       return { targets: [{ parsed: top.parsed, source: 'auto', inheritFromRoot: true }] };
     }
     // 根名有码但没有任何文件对得上：不改选文件里的其他番号，交给严格/回退策略处理
@@ -775,12 +784,11 @@ function detectTargets(
   }
 
   const counted = countPrimaryBases(files);
-  if (!counted.length) return { targets: [], status: 'no-code' };
-  if (counted.length === 1) {
-    return { targets: [{ parsed: counted[0].base, source: 'auto', inheritFromRoot: false }] };
-  }
-  if (counted[0].count > counted[1].count) {
-    return { targets: [{ parsed: counted[0].base, source: 'auto', inheritFromRoot: false }] };
+  const primary = counted[0];
+  if (!primary) return { targets: [], status: 'no-code' };
+  const secondary = counted[1];
+  if (!secondary || primary.count > secondary.count) {
+    return { targets: [{ parsed: primary.base, source: 'auto', inheritFromRoot: false }] };
   }
   return { targets: [], status: 'ambiguous' };
 }
@@ -1032,7 +1040,7 @@ export function extractTaskCodes(links: string[]): string[] {
       }
       if (!name) {
         const match = link.match(/[?&]dn=([^&]+)/i);
-        if (match) {
+        if (match?.[1]) {
           try {
             name = decodeURIComponent(match[1].replace(/\+/g, ' '));
           } catch {
@@ -1058,7 +1066,7 @@ export function parseManualCodes(text: string): ParsedManualCodes {
     if (!line) continue;
     let code: string | null = null;
     const taskCodes = extractTaskCodes([line]);
-    if (taskCodes.length) code = taskCodes[0];
+    if (taskCodes[0]) code = taskCodes[0];
     if (!code) {
       const candidate = extractCodeCandidates(line)[0];
       if (candidate) code = candidate.code;
@@ -1169,10 +1177,15 @@ export function encodeSubFileIndex(indices: number[]): string {
   let start = 0;
   let length = 0;
   const flush = () => {
-    runs.push(length === 1 ? `${sorted[start]}` : `${sorted[start]}-${sorted[start] + length - 1}`);
+    const head = sorted[start];
+    if (head === undefined) return;
+    runs.push(length === 1 ? `${head}` : `${head}-${head + length - 1}`);
   };
   for (let i = 0; i < sorted.length; i += 1) {
-    if (sorted[start] + length !== sorted[i]) {
+    const head = sorted[start];
+    const current = sorted[i];
+    if (head === undefined || current === undefined) break;
+    if (head + length !== current) {
       flush();
       length = 0;
       start = i;
@@ -1205,9 +1218,11 @@ export function selectSubFiles(
   policy: MatchPlan['policy'] = 'strict',
 ): SubFileSelection {
   const indexById = new Map(files.map((file) => [file.id, file.fileIndex]));
+  // fileIndex 推导失败为 -1（无法编码）：既不能进索引串，也不能计入 fileSize，
+  // 否则会出现"只下 0 号文件、大小却按全选中算"的错单
   const indices = group.selectedIds
     .map((id) => indexById.get(id))
-    .filter((value): value is number => typeof value === 'number');
+    .filter((value): value is number => typeof value === 'number' && value >= 0);
   const subFileIndex = encodeSubFileIndex(indices);
   if (!subFileIndex) {
     return policy === 'strict'

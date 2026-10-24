@@ -111,7 +111,7 @@ function normalizeSettings(raw: unknown): XunleiSettings {
     xunleiUrl: typeof input.xunleiUrl === 'string' ? input.xunleiUrl.trim() : DEFAULT_SETTINGS.xunleiUrl,
     downloadPath:
       typeof input.downloadPath === 'string' ? input.downloadPath.trim() : DEFAULT_SETTINGS.downloadPath,
-    downloadMode: input.downloadMode === 'confirm' ? 'confirm' : 'immediate',
+    downloadMode: input.downloadMode === 'immediate' ? 'immediate' : 'confirm',
     sendMode: input.sendMode === 'api' ? 'api' : 'dom',
     reloadBeforeSend: booleanOrDefault(input.reloadBeforeSend, DEFAULT_SETTINGS.reloadBeforeSend),
     notifyOnSendSuccess: booleanOrDefault(
@@ -155,18 +155,24 @@ export function getSettings(): XunleiSettings {
   return current;
 }
 
-/** 从 storage 加载设置（幂等，并发调用共享同一 Promise） */
+/** 从 storage 加载设置（幂等，并发调用共享同一 Promise；失败重试，最终失败不缓存以便下次重试） */
 export function ensureSettingsLoaded(): Promise<XunleiSettings> {
   if (!loadPromise) {
     loadPromise = (async () => {
       const area = getStorageArea();
       if (!area) return current;
-      try {
-        const stored = await area.get(SETTINGS_STORAGE_KEY);
-        current = normalizeSettings(stored?.[SETTINGS_STORAGE_KEY]);
-      } catch (error) {
-        console.warn('[settings] 读取设置失败，使用默认值:', error);
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const stored = await area.get(SETTINGS_STORAGE_KEY);
+          current = normalizeSettings(stored?.[SETTINGS_STORAGE_KEY]);
+          return current;
+        } catch (error) {
+          console.warn(`[settings] 读取设置失败（第 ${attempt} 次）:`, error);
+          if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 300));
+        }
       }
+      // 读取始终失败：不缓存本次结果，避免「默认值」被当成真实设置长期使用（后续保存会覆盖真实数据）
+      loadPromise = null;
       return current;
     })();
   }

@@ -109,7 +109,7 @@ export function extractResourceKey(link: string): string {
   if (lower.startsWith('magnet:?')) {
     // 磁力写法是 xt=urn:btih:<hash>（冒号），少数站点会写成 btih=，两者都要认
     const btih = /btih[:=]([0-9a-fA-F]{40}|[A-Za-z2-7]{32})(?:&|$)/i.exec(value);
-    return btih ? btih[1].toUpperCase() : '';
+    return btih?.[1] ? btih[1].toUpperCase() : '';
   }
   if (lower.startsWith('ed2k://')) {
     // ed2k://|file|名称|大小|哈希|/

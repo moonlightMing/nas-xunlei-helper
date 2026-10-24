@@ -1,4 +1,4 @@
-import { finishEntry, markInterruptedRuns, startEntry } from '@/utils/history';
+import { clearHistory, finishEntry, markInterruptedRuns, startEntry } from '@/utils/history';
 import { extractLinks, extractResourceKey, parseLinks } from '@/utils/links';
 import type {
   DiagnoseCheck,
@@ -109,6 +109,53 @@ interface SendOptions {
 }
 
 let activeSend: Promise<SendOutcome> | null = null;
+
+/**
+ * 发送互斥锁的跨 SW 重启兜底：activeSend 只在 Service Worker 内存里，
+ * SW 中途被回收后锁就丢了。锁同时写入 storage.session，新 SW 靠时间戳判断
+ * 是否仍有未结束的发送；超过总超时的锁视为孤儿，可被下一次发送覆盖。
+ */
+const SEND_LOCK_KEY = 'nas_xunlei_send_lock';
+/** 整条发送链路的兜底超时：超时后释放锁并把结果交回调用方，后台流程继续自行收尾 */
+const SEND_TOTAL_TIMEOUT_MS = 5 * 60_000;
+
+interface SendLockState {
+  at: number;
+}
+
+async function readSendLockHeld(): Promise<boolean> {
+  try {
+    const stored = await chrome.storage.session.get(SEND_LOCK_KEY);
+    const lock = stored?.[SEND_LOCK_KEY] as SendLockState | undefined;
+    return Boolean(
+      lock && typeof lock.at === 'number' && Date.now() - lock.at < SEND_TOTAL_TIMEOUT_MS,
+    );
+  } catch {
+    // storage.session 不可用时退回纯内存锁
+    return false;
+  }
+}
+
+async function acquireSendLock(): Promise<void> {
+  try {
+    await chrome.storage.session.set({ [SEND_LOCK_KEY]: { at: Date.now() } satisfies SendLockState });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function releaseSendLock(): Promise<void> {
+  try {
+    await chrome.storage.session.remove(SEND_LOCK_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 发送或诊断是否正在占用迅雷页面/接口（诊断入口与发送共用同一互斥） */
+async function isSendBusy(): Promise<boolean> {
+  return Boolean(activeSend) || (await readSendLockHeld());
+}
 
 export default defineBackground(() => {
   // Service Worker 常驻期间也要感知设置页的修改，避免发送时沿用旧路径
@@ -242,27 +289,49 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
     return openXunlei(message.data?.url);
   }
   if (message.type === 'diagnostics') {
-    if (message.action === 'testConnection') {
-      return testConnection(message.data.url, message.data.downloadPath);
+    switch (message.action) {
+      case 'testConnection':
+        return testConnection(message.data.url, message.data.downloadPath);
+      case 'listDir':
+        return listDir(message.data.url, message.data.parentId, message.data.parentPath);
+      default:
+        return { ok: false, code: 'unknown', message: '未知诊断操作' };
     }
-    return listDir(message.data.url, message.data.parentId, message.data.parentPath);
   }
   if (message.type === 'confirm') {
-    if (message.action === 'submit') return submitConfirmation(message.data);
-    await cancelConfirmation(message.data.id);
-    return { ok: true };
+    switch (message.action) {
+      case 'submit':
+        return submitConfirmation(message.data);
+      case 'cancel':
+        await cancelConfirmation(message.data.id);
+        return { ok: true };
+      default:
+        return { ok: false, code: 'unknown', message: '未知确认操作' };
+    }
   }
   if (message.type === 'avMatch') {
     return readDialogFiles();
   }
+  if (message.type === 'history') {
+    // 发送记录的写入统一收口在 background 的串行队列里，
+    // 避免 options「清空」与监控回写在两个上下文里整键互相覆盖
+    if (message.action === 'clear') {
+      await clearHistory();
+      return { ok: true };
+    }
+    return { ok: false, message: '未知历史操作' };
+  }
   if (message.type === 'tasks') {
-    if (message.action === 'list') {
-      return listTasksViaApi(message.data?.tab ?? 'ing', message.data?.limit);
+    switch (message.action) {
+      case 'list':
+        return listTasksViaApi(message.data?.tab ?? 'ing', message.data?.limit);
+      case 'operate':
+        return operateTaskViaApi(message.data.id, message.data.phase);
+      case 'delete':
+        return deleteTasksViaApi(message.data.ids);
+      default:
+        return { ok: false, code: 'unknown', message: '未知任务操作' };
     }
-    if (message.action === 'operate') {
-      return operateTaskViaApi(message.data.id, message.data.phase);
-    }
-    return deleteTasksViaApi(message.data.ids);
   }
   return { ok: false, code: 'unknown', message: '未知消息类型' };
 }
@@ -296,7 +365,6 @@ function toTaskSummary(task: XunleiTask): TaskSummary {
     checkedSize: toNumber(task.params?.checked_size),
     realPath: task.params?.real_path ?? '',
     message: task.message ?? '',
-    updatedAt: task.updated_time ?? task.created_time ?? '',
   };
 }
 
@@ -384,6 +452,10 @@ async function deleteTasksViaApi(ids: string[]): Promise<TaskActionResponse> {
 
 /** 选项页只读诊断：读取当前已打开迅雷页的解析文件树，不点击、不下载 */
 async function readDialogFiles(): Promise<ReadDialogFilesResponse> {
+  // 读取弹窗文件树与发送共用迅雷标签页，避免与进行中的自动化互相干扰
+  if (await isSendBusy()) {
+    return { ok: false, code: 'busy', message: '正在发送任务，请稍后再试' };
+  }
   await ensureSettingsLoaded();
   const settings = getSettings();
   const urlError = validateXunleiUrl(settings.xunleiUrl);
@@ -419,35 +491,54 @@ async function readDialogFiles(): Promise<ReadDialogFilesResponse> {
 }
 
 /** 发送链接到 NAS 迅雷：锁 → 解析/校验 → 历史 → 打开/复用迅雷页 → 预检 → 自动化 → 监控 → 通知 */
-function sendLinksToNas(
+async function sendLinksToNas(
   links: string[],
   options: SendOptions,
 ): Promise<SendOutcome> {
-  if (activeSend) {
-    return Promise.resolve({
-      stage: 'prepare',
-      ok: false,
-      code: 'busy',
-      message: '正在发送中，请稍候再试',
-    } satisfies SendOutcome);
-  }
+  const busyOutcome = (): SendOutcome => ({
+    stage: 'prepare',
+    ok: false,
+    code: 'busy',
+    message: '正在发送中，请稍候再试',
+  });
+  if (activeSend || (await readSendLockHeld())) return busyOutcome();
+  await acquireSendLock();
 
-  const task = runSend(links, options);
-  activeSend = task
-    .then(
-      (outcome) => outcome,
-      (error: Error) =>
-        ({
-          stage: 'prepare',
-          ok: false,
-          code: 'unknown',
-          message: error.message || '发送失败',
-        }) satisfies SendOutcome,
-    )
-    .finally(() => {
-      activeSend = null;
-    });
-  return activeSend;
+  const run = runSend(links, options).catch((error: Error): SendOutcome => ({
+    stage: 'prepare',
+    ok: false,
+    code: 'unknown',
+    message: error.message || '发送失败',
+  }));
+  activeSend = run;
+  void run.finally(async () => {
+    activeSend = null;
+    await releaseSendLock();
+  });
+
+  // 总超时兜底：单次 executeScript 卡死时后续发送不至于永远 busy。
+  // 超时只释放锁并返回结果，不打断后台流程，其历史/通知收尾照常发生。
+  let timedOut = false;
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutOutcome = new Promise<SendOutcome>((resolve) => {
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      resolve({
+        stage: 'prepare',
+        ok: false,
+        code: 'unknown',
+        message: `发送超时（${Math.round(SEND_TOTAL_TIMEOUT_MS / 60_000)} 分钟无进展），迅雷页面可能无响应，请打开页面检查`,
+      });
+    }, SEND_TOTAL_TIMEOUT_MS);
+  });
+  const outcome = await Promise.race([run, timeoutOutcome]).finally(() => {
+    if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+  });
+  if (timedOut) {
+    activeSend = null;
+    await releaseSendLock();
+  }
+  return outcome;
 }
 
 const BT_LINK = /^(magnet:|thunder:|ed2k:)/i;
@@ -457,7 +548,7 @@ const PARSE_PAGE_SIZE = 2000;
 /** 通知/弹窗里展示链接时取可辨识前缀，避免整条磁力刷屏 */
 function shortLinkLabel(link: string): string {
   const dn = /[?&]dn=([^&]+)/.exec(link);
-  if (dn) {
+  if (dn?.[1]) {
     try {
       return decodeURIComponent(dn[1].replace(/\+/g, ' ')).slice(0, 40);
     } catch {
@@ -465,8 +556,7 @@ function shortLinkLabel(link: string): string {
     }
   }
   const hash = /btih:([0-9a-zA-Z]{8,})/.exec(link);
-  if (hash) return `${hash[1].slice(0, 10)}…`;
-  return link.length > 32 ? `${link.slice(0, 32)}…` : link;
+  return hash?.[1] ? `${hash[1].slice(0, 10)}…` : link.length > 32 ? `${link.slice(0, 32)}…` : link;
 }
 
 /** 接口模式共用的上下文：设备 space、目标目录、路径回退信息 */
@@ -627,7 +717,6 @@ async function analyzeApiLinks(
   const rootByGroup = new Map<string, ResourceNode>();
   const rootIdByLink = new Map<string, string>();
   const noTreeLinks: string[] = [];
-  let parseTruncated = false;
 
   if (needFiles) {
     for (const task of tasks) {
@@ -660,14 +749,17 @@ async function analyzeApiLinks(
         noTreeLinks.push(task.link);
         continue;
       }
-      // 返回叶子数顶到 page_size 说明文件树被截断，不能拿残缺列表下结论
-      if (files.length >= PARSE_PAGE_SIZE) parseTruncated = true;
+      // 返回叶子数顶到 page_size 说明文件树被截断，不能拿残缺列表下结论。
+      // 截断只影响该链接自己：不进匹配计划，稍后按「严格暂停 / 回退整包」单独处理，
+      // 不连累同批其它健康链接（接口模式每个链接是独立任务）
+      const truncated = files.length >= PARSE_PAGE_SIZE;
       const rootId = root.id ?? task.link;
       task.name = root.name;
       task.size = Number(root.file_size ?? 0) || 0;
       task.totalFileCount = Number(root.file_count ?? 0) || undefined;
       task.files = files;
-      task.truncated = files.length >= PARSE_PAGE_SIZE;
+      task.truncated = truncated;
+      if (truncated) continue;
       groups.push({
         rootId,
         rootName: root.name ?? task.link,
@@ -690,7 +782,8 @@ async function analyzeApiLinks(
       groups,
       checkedIds: [],
       buttonDisabled: false,
-      truncated: parseTruncated,
+      // 截断的链接已在上一步被隔离出 groups，不再用全局截断标志连累整单
+      truncated: false,
     };
     const plan = buildMatchPlan(snapshot, settings.avMatch, btLinks);
     matchSummary = toMatchSummary(plan);
@@ -755,8 +848,31 @@ async function analyzeApiLinks(
     }
   }
 
+  // 截断的链接单独落地：与页面自动化的「plan 被跳过」同一套语义，
+  // 但只作用于截断的那条链接——严格暂停、回退整包，绝不带残缺文件树下结论。
+  // 番号匹配未启用时不受严格/回退策略影响，维持「只能整包」。
+  const truncatedTasks = tasks.filter((task) => task.kind === 'bt' && task.truncated);
+  for (const task of truncatedTasks) {
+    task.selectionDisabled = true;
+    if (settings.avMatch.enabled) {
+      task.skippedUnmatched = strict;
+      task.preselectedIds = strict ? [] : task.files.map((file) => file.id);
+      task.wholePackageDefault = !strict;
+    } else {
+      task.skippedUnmatched = false;
+      task.preselectedIds = task.files.map((file) => file.id);
+      task.wholePackageDefault = true;
+    }
+    task.note = '文件数超过解析上限（列表不完整），只能整包下载';
+  }
+
   if (noTreeLinks.length) {
     const note = `${noTreeLinks.length} 个链接没有 BT 文件树，已跳过番号匹配，将整包下载`;
+    matchText = matchText ? `${matchText}；${note}` : note;
+  }
+  if (truncatedTasks.length) {
+    const wholePackage = !settings.avMatch.enabled || !strict;
+    const note = `${truncatedTasks.length} 个链接文件数超过解析上限，${wholePackage ? '将整包下载' : '已按未匹配暂停'}`;
     matchText = matchText ? `${matchText}；${note}` : note;
   }
 
@@ -943,8 +1059,32 @@ async function prepareApiConfirmation(
   return outcome;
 }
 
+/** 确认窗口提交防重入：同一 pending 的并发提交只放行一个 */
+const submittingConfirmIds = new Set<string>();
+
 /** 确认窗口提交：重新校验勾选，再真正调用 drive/v1/task 建任务 */
 async function submitConfirmation(data: {
+  id: string;
+  selections: ConfirmSelectionInput[];
+  parentFolderId?: string;
+}): Promise<SendOutcome> {
+  if (submittingConfirmIds.has(data.id)) {
+    return {
+      stage: 'confirm-download',
+      ok: false,
+      code: 'busy',
+      message: '正在提交，请稍候',
+    };
+  }
+  submittingConfirmIds.add(data.id);
+  try {
+    return await performConfirmSubmit(data);
+  } finally {
+    submittingConfirmIds.delete(data.id);
+  }
+}
+
+async function performConfirmSubmit(data: {
   id: string;
   selections: ConfirmSelectionInput[];
   parentFolderId?: string;
@@ -993,9 +1133,6 @@ async function submitConfirmation(data: {
     ? { needed: true, applied: true, resolvedPath: pathLabel }
     : { needed: false, applied: true };
 
-  // 先移除 pending，避免窗口重复提交；创建失败后用户可重新发送
-  await deletePendingConfirmation(pending.id);
-
   const taskIds: string[] = [];
   const failures: string[] = [];
   for (const spec of submission.specs) {
@@ -1019,29 +1156,22 @@ async function submitConfirmation(data: {
   }
 
   if (!taskIds.length) {
+    // 一个任务都没建成：保留 pending 让用户在确认窗口里直接「重试提交」，
+    // 勾选与命名不丢；重试仍失败或关闭窗口/超时再按取消收尾
     const message = `创建任务失败：${failures[0] ?? '迅雷未返回任务'}`;
-    const outcome: SendOutcome = {
+    return {
       stage: 'done',
       ok: false,
       code: 'unknown',
       message,
       pathApplied,
       match: pending.match,
+      retryable: true,
     };
-    await finishEntry(pending.historyId, {
-      status: 'failed',
-      stage: 'done',
-      code: 'unknown',
-      message,
-      pathApplied,
-      match: pending.match,
-    });
-    if (pending.notify) {
-      await ensureSettingsLoaded();
-      await showSendResult(outcome, getSettings(), pending.links);
-    }
-    return outcome;
   }
+
+  // 至少建成了一个任务：pending 的使命结束，删除并收尾（部分失败也删除，重试会造成重复任务）
+  await deletePendingConfirmation(pending.id);
 
   const complete = failures.length === 0 && submission.skipped.length === 0;
   const outcome: SendOutcome = {
@@ -1078,7 +1208,26 @@ async function submitConfirmation(data: {
     await ensureSettingsLoaded();
     await showSendResult(outcome, getSettings(), pending.links);
   }
+  await maybeStartApiMonitor(pending.historyId, pending.url, taskIds);
   return outcome;
+}
+
+/** 接口模式建任务成功后按设置启动任务监控（直接读接口，不依赖迅雷页面） */
+async function maybeStartApiMonitor(historyId: string, url: string, taskIds: string[]): Promise<void> {
+  if (!taskIds.length) return;
+  await ensureSettingsLoaded();
+  if (!getSettings().monitorDownloads) return;
+  await startMonitor({
+    requestId: historyId,
+    tabUrl: url,
+    channel: 'api',
+    mode: 'immediate',
+    baselineIds: [],
+    baselineReliable: true,
+    candidateIds: taskIds,
+  }).catch((error: Error) => {
+    console.warn('[background] 启动接口模式任务监控失败:', error);
+  });
 }
 
 async function cancelConfirmation(id: string): Promise<void> {
@@ -1227,7 +1376,12 @@ async function sendViaApi(
     paused: skipped.length ? { reason: 'unmatched' } : undefined,
     match: matchSummary,
   };
-  return settle(outcome, complete ? 'ok' : skipped.length && !failures.length ? 'paused' : 'partial');
+  const settled = await settle(
+    outcome,
+    complete ? 'ok' : skipped.length && !failures.length ? 'paused' : 'partial',
+  );
+  if (taskIds.length) await maybeStartApiMonitor(historyId, settings.xunleiUrl, taskIds);
+  return settled;
 }
 async function runSend(
   rawLinks: string[],
@@ -1353,12 +1507,58 @@ async function runSend(
     baseline && (baseline.currentIds.length > 0 || Object.keys(baseline.tasks).length > 0),
   );
 
-  const outcome = await runSendFlow(tab.id, {
-    links,
-    downloadPath: settings.downloadPath,
-    mode: settings.downloadMode,
-    match: settings.avMatch,
-  });
+  // 页面自动化 + 立即下载的重复资源防呆：弹窗停留不足 1 秒即被自动点击，
+  // 用户没有机会像确认模式那样人工核对，重复资源会静默顶掉旧任务记录。
+  // 只读复用页面 Vuex 里的任务 params（url/info_hash），与任务监控同一数据面。
+  if (!options.force && settings.downloadMode === 'immediate') {
+    const known = new Set<string>();
+    for (const item of Object.values(baseline?.tasks ?? {})) {
+      if (item.infoHash) known.add(item.infoHash);
+      const key = extractResourceKey(item.url ?? '');
+      if (key) known.add(key);
+    }
+    // 页面任务列表没加载出 params 时宁可不拦，也不误拦正常发送
+    if (known.size) {
+      const dupes = links
+        .map((link) => ({ link, key: extractResourceKey(link) }))
+        .filter((item) => item.key.length > 0 && known.has(item.key));
+      if (dupes.length) {
+        const outcome: SendOutcome = {
+          stage: 'prepare',
+          ok: true,
+          code: 'duplicate-task',
+          message: `NAS 上已有 ${dupes.length} 个相同资源的任务，重复发送会顶掉旧任务记录，已暂停；可在弹窗选择「仍然发送」`,
+          paused: { reason: 'duplicate' },
+        };
+        await finishEntry(historyId, {
+          status: 'paused',
+          stage: 'prepare',
+          code: 'duplicate-task',
+          message: outcome.message,
+        });
+        if (options.notify) await showSendResult(outcome, settings, links);
+        return outcome;
+      }
+    }
+  }
+
+  let outcome: SendOutcome;
+  try {
+    outcome = await runSendFlow(tab.id, {
+      links,
+      downloadPath: settings.downloadPath,
+      mode: settings.downloadMode,
+      match: settings.avMatch,
+    });
+  } catch (error) {
+    // 未预期的异常也要让历史条目收敛到终态，而不是永远停在"发送中"
+    outcome = {
+      stage: 'match',
+      ok: false,
+      code: 'unknown',
+      message: `发送流程异常：${(error as Error).message || '未知错误'}`,
+    };
+  }
 
   const pathFallback = Boolean(
     outcome.ok && outcome.pathApplied?.needed && !outcome.pathApplied.applied,
@@ -1389,6 +1589,7 @@ async function runSend(
     void startMonitor({
       requestId: historyId,
       tabUrl: settings.xunleiUrl,
+      channel: 'dom',
       mode: settings.downloadMode,
       baselineIds,
       baselineReliable,
@@ -1453,6 +1654,10 @@ async function testConnection(
   url: string,
   downloadPath?: string,
 ): Promise<TestConnectionResponse> {
+  // 诊断会打开/复用并发送正在使用的同一迅雷标签页，与发送互斥
+  if (await isSendBusy()) {
+    return { ok: false, checks: [], code: 'busy', message: '正在发送任务，请稍后再试' };
+  }
   const checks: DiagnoseCheck[] = [];
   const urlError = validateXunleiUrl(url);
   checks.push({
@@ -1553,6 +1758,10 @@ async function listDir(
   parentId?: string,
   parentPath?: string,
 ): Promise<ListDirResponse> {
+  // 读取目录会导航/复用发送正在使用的迅雷标签页，与发送互斥
+  if (await isSendBusy()) {
+    return { ok: false, items: [], code: 'busy', message: '正在发送任务，请稍后再试' };
+  }
   const urlError = validateXunleiUrl(url);
   if (urlError) {
     return {

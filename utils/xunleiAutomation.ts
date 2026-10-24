@@ -54,6 +54,11 @@ export const XUNLEI_SELECTORS = {
 
 /** 自动化单步等待元素的超时（毫秒） */
 export const STEP_TIMEOUT_MS = 10_000;
+/**
+ * 解析结果等待超时（毫秒）：点击「解析」后磁力需要经 DHT 拉取元数据，
+ * 远慢于普通 DOM 步骤，10 秒会把慢资源误判成 parse-timeout 假失败
+ */
+export const PARSE_WAIT_TIMEOUT_MS = 45_000;
 
 export type AutomationStep = 'create-task' | 'fill-links' | 'confirm-download' | 'wait-dialog';
 
@@ -89,10 +94,12 @@ export interface SendOutcome {
   pathApplied?: PathApplied;
   /** 立即下载点击后读到的任务 id，用于任务监控初始候选 */
   taskIds?: string[];
-  /** 严格模式/文件列表异常时暂停，不点击立即下载；duplicate 为接口模式重复资源防呆 */
+  /** 严格模式/文件列表异常时暂停，不点击立即下载；duplicate 为重复资源防呆 */
   paused?: { reason: 'unmatched' | 'file-list-timeout' | 'duplicate' };
   /** 番号匹配摘要（只含计数，不含完整文件列表） */
   match?: MatchSummary;
+  /** 失败但保留了重试所需状态（如确认窗口提交失败且 pending 未删），UI 可直接重试 */
+  retryable?: boolean;
 }
 
 interface StepResult {
@@ -133,6 +140,10 @@ export interface TaskStateItem {
   progress?: number;
   detail?: string;
   type?: string;
+  /** 任务原始链接（来自页面 Vuex params.url），供重复资源防呆比对 */
+  url?: string;
+  /** 资源 infohash 大写（来自页面 Vuex params.info_hash），供重复资源防呆比对 */
+  infoHash?: string;
 }
 
 export interface TaskStateSnapshot {
@@ -550,7 +561,7 @@ async function execStep(
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       func: injectedRunStep,
-      args: [step, payload, XUNLEI_SELECTORS, STEP_TIMEOUT_MS],
+      args: [step, payload, XUNLEI_SELECTORS, STEP_TIMEOUT_MS, PARSE_WAIT_TIMEOUT_MS],
       world: needsPageWorld ? 'MAIN' : 'ISOLATED',
     });
     const result = results[0]?.result as StepResult | undefined;
@@ -1534,6 +1545,8 @@ async function injectedReadTasks(trackedIds: string[], refresh: boolean) {
       progress?: number;
       detail?: string;
       type?: string;
+      url?: string;
+      infoHash?: string;
     }
   > = {};
 
@@ -1553,6 +1566,8 @@ async function injectedReadTasks(trackedIds: string[], refresh: boolean) {
           '',
       ),
       type: String(task.type || ''),
+      url: String(task.params?.url || ''),
+      infoHash: String(task.params?.info_hash || '').toUpperCase(),
     };
   };
 
@@ -1592,6 +1607,7 @@ async function injectedRunStep(
   payload: Record<string, string>,
   selectors: typeof XUNLEI_SELECTORS,
   timeoutMs: number,
+  parseTimeoutMs: number,
 ): Promise<StepResult> {
   class StepError extends Error {
     code: string;
@@ -1606,7 +1622,7 @@ async function injectedRunStep(
   const PARSE_ERROR_PATTERN =
     /(解析失败|链接无效|链接已失效|无法解析|不支持该链接|下载地址无效|任务创建失败)/;
 
-  /** 等待匹配元素出现（MutationObserver + 超时 reject） */
+  /** 等待匹配元素出现（MutationObserver + 超时 reject）；只认可见元素，避免 Element UI 留在 DOM 里的隐藏弹窗副本被误操作 */
   function waitElement<T extends HTMLElement = HTMLElement>(selector: string, text?: string): Promise<T> {
     return new Promise((resolve, reject) => {
       const hit = queryOnce();
@@ -1627,15 +1643,17 @@ async function injectedRunStep(
 
       function queryOnce(): T | null {
         const nodes = Array.from(document.querySelectorAll<T>(selector));
-        const filtered = text ? nodes.filter((n) => (n.textContent || '').includes(text)) : nodes;
+        const filtered = text
+          ? nodes.filter((n) => (n.textContent || '').includes(text) && isVisibleElement(n))
+          : nodes.filter((n) => isVisibleElement(n));
         return filtered[0] ?? null;
       }
     });
   }
 
-  /** 轮询等待条件成立（用于按钮文本变化等非 DOM 出现型状态） */
-  async function waitFor<T>(probe: () => T | null, onTick?: () => void): Promise<T> {
-    const deadline = Date.now() + timeoutMs;
+  /** 轮询等待条件成立（用于按钮文本变化等非 DOM 出现型状态）；解析类等待用 parseTimeoutMs */
+  async function waitFor<T>(probe: () => T | null, onTick?: () => void, waitMs: number = timeoutMs): Promise<T> {
+    const deadline = Date.now() + waitMs;
     for (;;) {
       onTick?.();
       const value = probe();
@@ -1653,13 +1671,15 @@ async function injectedRunStep(
     return node.offsetParent !== null || node.getBoundingClientRect().width > 0;
   }
 
-  // 读取/应用与点击必须指向同一个可见结果弹窗，避免隐藏的旧弹窗抢到点击
+  // 读取/应用与点击必须指向同一个可见结果弹窗，避免隐藏的旧弹窗抢到点击。
+  // 等待磁力元数据解析可能远超普通步骤超时，用 parseTimeoutMs
   async function waitVisibleDialog(): Promise<HTMLElement> {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Date.now() + parseTimeoutMs;
     for (;;) {
       const dialogs = Array.from(document.querySelectorAll(selectors.taskDialog)) as HTMLElement[];
       const visible = dialogs.filter(isVisibleElement);
-      if (visible.length) return visible[visible.length - 1];
+      const dialog = visible[visible.length - 1];
+      if (dialog) return dialog;
       if (Date.now() > deadline) {
         throw new StepError('parse-timeout', '等待解析结果超时');
       }
@@ -1746,6 +1766,8 @@ async function injectedRunStep(
   async function resolveDownloadPath(path: string, commit: boolean): Promise<PathApplied> {
     const raw = (path || '').trim();
     if (!raw) return { needed: false, applied: false };
+    // 逐段列举目录可能很慢（每段最多 10 页 × 8 秒），设总上限避免拖垮整个发送步骤
+    const deadline = Date.now() + 20_000;
 
     const fail = (reason: string): PathApplied => {
       if (commit) {
@@ -1790,6 +1812,7 @@ async function injectedRunStep(
         .filter(Boolean);
 
       for (const segment of rest) {
+        if (Date.now() > deadline) return fail('解析保存目录超时，已回退迅雷当前目录');
         const children = await listFolders(store, currentId);
         const next =
           children.find(
@@ -1932,6 +1955,7 @@ async function injectedRunStep(
             throwIfLogin();
             throwIfParseError();
           },
+          parseTimeoutMs,
         );
         const disabled =
           downloadButton.hasAttribute('disabled') ||
@@ -1949,9 +1973,22 @@ async function injectedRunStep(
           payload.skipPath === '1'
             ? undefined
             : await resolveDownloadPath(payload.downloadPath || '', true);
+        // 点击后任务入库有延迟，且失败 toast 可能晚于固定等待出现：
+        // 轮询至多 3 秒，出现新任务 id 或错误 toast 即返回
+        const beforeIds = collectTaskIds();
         downloadButton.click();
-        await new Promise((r) => window.setTimeout(r, 800));
-        const clickError = findErrorToast();
+        let taskIds: string[] = [];
+        let clickError: string | null = null;
+        for (let tick = 0; tick < 15; tick += 1) {
+          await new Promise((r) => window.setTimeout(r, 200));
+          clickError = findErrorToast();
+          if (clickError) break;
+          const after = collectTaskIds();
+          if (after.some((id) => !beforeIds.includes(id))) {
+            taskIds = after;
+            break;
+          }
+        }
         if (clickError) {
           throw new StepError('download-click-failed', `迅雷拒绝创建任务：${clickError}`);
         }
@@ -1959,7 +1996,7 @@ async function injectedRunStep(
           ok: true,
           message: '已点击立即下载',
           pathApplied,
-          data: { taskIds: collectTaskIds() },
+          data: { taskIds: taskIds.length ? taskIds : collectTaskIds() },
         };
       }
       case 'wait-dialog': {
@@ -1980,6 +2017,7 @@ async function injectedRunStep(
             throwIfLogin();
             throwIfParseError();
           },
+          parseTimeoutMs,
         );
         const pathApplied = await resolveDownloadPath(payload.downloadPath || '', true);
         return { ok: true, message: '链接已解析完成', pathApplied };

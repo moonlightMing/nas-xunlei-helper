@@ -10,3 +10,4 @@ node_modules
 .debug-profile-edge
 chrome
 .zcode
+.serena

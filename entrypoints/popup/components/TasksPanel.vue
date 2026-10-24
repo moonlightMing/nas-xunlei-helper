@@ -38,6 +38,8 @@ const listRef = ref<HTMLElement | null>(null);
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 let fitKey = '';
+/** 卸载后不再排下一轮轮询，避免在途请求返回时又把定时器拉起来 */
+let unmounted = false;
 
 const bytes = (value: number): string => {
   if (!value || value < 0) return '0 B';
@@ -70,6 +72,7 @@ const statText = (task: TaskSummary): string => {
 
 const schedule = () => {
   if (timer) clearTimeout(timer);
+  if (unmounted) return;
   const delay = Math.min(10, Math.max(2, intervalSeconds.value)) * 1000;
   timer = setTimeout(() => void load(true), delay);
 };
@@ -95,6 +98,7 @@ const fitListHeight = async () => {
   }
 };
 
+/** 静默轮询失败时保留旧列表，只叠加错误提示，避免列表闪空再恢复 */
 const load = async (silent = false) => {
   if (!silent) loading.value = true;
   try {
@@ -106,13 +110,13 @@ const load = async (silent = false) => {
     if (!response) {
       errorText.value = '后台无响应，请确认扩展已重载';
       errorCode.value = 'unknown';
-      tasks.value = [];
+      if (!silent) tasks.value = [];
       return;
     }
     if (!response.ok) {
       errorText.value = response.message || '读取下载任务失败';
       errorCode.value = response.code ?? 'unknown';
-      tasks.value = [];
+      if (!silent) tasks.value = [];
       return;
     }
     errorText.value = '';
@@ -122,7 +126,7 @@ const load = async (silent = false) => {
   } catch (error) {
     errorText.value = (error as Error).message || '读取下载任务失败';
     errorCode.value = 'unknown';
-    tasks.value = [];
+    if (!silent) tasks.value = [];
   } finally {
     loading.value = false;
     schedule();
@@ -164,6 +168,7 @@ const errorMeta = () => (errorCode.value ? getSendErrorMeta(errorCode.value as S
 
 onMounted(() => void load());
 onBeforeUnmount(() => {
+  unmounted = true;
   if (timer) clearTimeout(timer);
 });
 </script>

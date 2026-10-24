@@ -5,7 +5,7 @@ import { parseLinks } from '@/utils/links';
 import type { SendLinksResponse } from '@/utils/messaging';
 import { getSendErrorMeta } from '@/utils/sendErrors';
 
-defineProps<{ settingsReady: boolean; sendingDisabled?: boolean }>();
+const props = defineProps<{ settingsReady: boolean }>();
 
 const linksText = ref('');
 const sending = ref(false);
@@ -97,9 +97,10 @@ const handleForceSend = () => {
 };
 
 const handleKeydown = (event: KeyboardEvent) => {
+  // 快捷键与按钮走同一可用条件，避免绕过 settingsReady 直接发送
   if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
     event.preventDefault();
-    void handleSend();
+    if (props.settingsReady) void submit(false);
   }
 };
 
@@ -117,8 +118,6 @@ const handlePrimaryAction = () => {
   if (primaryAction.value === 'open-options') void handleOpenSettings();
   else void handleOpenXunlei();
 };
-
-defineExpose({ handleSend });
 </script>
 
 <template>
@@ -140,7 +139,7 @@ defineExpose({ handleSend });
       type="primary"
       block
       :loading="sending"
-      :disabled="!settingsReady || sendingDisabled"
+      :disabled="!settingsReady"
       @click="handleSend"
     >
       {{ sending ? '正在发送到 NAS…' : '发送到 NAS 迅雷' }}

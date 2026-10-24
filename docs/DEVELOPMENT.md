@@ -15,14 +15,28 @@
 | --- | --- |
 | `pnpm install` | 安装依赖（postinstall 自动执行 `wxt prepare`） |
 | `pnpm dev` | 开发模式：启动 WXT 开发服务器并打开浏览器，支持热更新 |
-| `pnpm compile` | 类型检查（`vue-tsc --noEmit`） |
+| `pnpm compile` | 类型检查（`vue-tsc --noEmit`，含 `tests/`，`noUncheckedIndexedAccess` 严格档） |
 | `pnpm build` | 生产构建，产物输出到 `.output/chrome-mv3` |
 | `pnpm check` | `compile` + `build`，提交前至少执行一次 |
+| `pnpm test` | 单元测试（vitest，`tests/` 下的纯函数回归测试） |
 | `pnpm zip` | 构建并打包为 `.output/nas-xunlei-helper-<version>-chrome.zip` |
 | `pnpm deploy` | 构建并部署到 Chrome 调试实例（见下） |
 | `pnpm deploy:cent` | 构建并部署到 Cent Browser 调试实例（见下） |
 
 > 构建时可能出现 chunk 超过 500 kB 的警告（Ant Design Vue 全量引入，尚未做按需拆分），不影响功能。
+> `scripts/deploy.mjs` 不在类型检查范围内（本地调试脚本，无类型保障）。
+
+## 单元测试与 CI
+
+`tests/` 目录用 vitest 覆盖**无副作用纯函数**的关键不变量，改动这些模块必须跑 `pnpm test`：
+
+- `links.test.ts`：`extractResourceKey` 的六种链接归一（磁力冒号/等号写法、大小写、thunder 外壳、ed2k、http）——重复资源防呆的生命线；链接提取去重。
+- `avMatch.test.ts`：`encodeSubFileIndex` 连续段折叠与负数剔除；番号提取边界（FC2 数字右边界、`file01` 等通用序号名、加勒比日期边界匹配）；`buildMatchPlan` 的根名兜底/不继承广告/截断跳过/`excludeKeywords` 反向放大（已知行为防回归记录）；`selectSubFiles` 空编码不退化整包。
+- `confirm.test.ts`：确认窗口文件树还原、勾选→`sub_file_index` 编码、整包/空选择/截断分支。
+- `xunleiApi.test.ts`：`flattenResourceFiles` 根名不拼进 path、序号回退推导；拦截 `fetch` 断言 `pan-auth` 头与 `pan_auth` 查询参数双通道、`method/delete/` 隧道。
+- `settings.test.ts`：设置缺省回落方向、读取失败不缓存默认值。
+
+GitHub Actions（`.github/workflows/check.yml`）在 push / PR 时自动执行 `pnpm install` + `pnpm check` + `pnpm test`；不在 CI 中运行部署（会打开本地浏览器）。
 
 ## 项目结构
 

@@ -96,10 +96,8 @@ export async function showSendResult(
 ): Promise<void> {
   const meta = getSendErrorMeta(outcome.code);
   if (outcome.paused) {
-    if (!settings.notifyOnSendFailure) {
-      await clearSendResult();
-      return;
-    }
+    // 暂停不是失败（未匹配/重复拦截），且通常需要用户去页面/弹窗处理，
+    // 不受「发送失败通知」开关约束；弹窗内发送时调用方本来就不弹通知
     await saveActionState({
       id: NOTIFICATION_IDS.sendResult,
       actions: ['open-xunlei', 'open-options'],

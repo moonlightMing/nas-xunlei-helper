@@ -1,8 +1,13 @@
 import { showTaskComplete, showTaskFailure } from '@/utils/notifications';
 import { updateMonitor } from '@/utils/history';
 import { ensureSettingsLoaded, getSettings, type DownloadMode } from '@/utils/settings';
-import { readTaskState, type TaskStateSnapshot } from '@/utils/xunleiAutomation';
+import {
+  readTaskState,
+  type TaskStateItem,
+  type TaskStateSnapshot,
+} from '@/utils/xunleiAutomation';
 import { findXunleiTab } from '@/utils/xunleiTab';
+import { getDeviceSpace, listTasks } from '@/utils/xunleiApi';
 
 export const MONITOR_ALARM_NAME = 'nas-xunlei-task-monitor';
 export const MONITOR_STORAGE_KEY = 'nas_xunlei_monitor';
@@ -34,6 +39,8 @@ interface MonitoredTask {
 export interface MonitorSession {
   requestId: string;
   tabUrl: string;
+  /** dom = 读迅雷页面 Vuex；api = 直接调 drive/v1 接口（接口模式发送） */
+  channel?: 'dom' | 'api';
   mode: DownloadMode;
   startedAt: number;
   discoverUntil: number;
@@ -50,6 +57,7 @@ export interface MonitorSession {
 export interface StartMonitorInput {
   requestId: string;
   tabUrl: string;
+  channel?: 'dom' | 'api';
   mode: DownloadMode;
   baselineIds: string[];
   baselineReliable: boolean;
@@ -62,6 +70,7 @@ type StopReason =
   | 'timeout'
   | 'tab-closed'
   | 'page-unavailable'
+  | 'api-unavailable'
   | 'disabled'
   | 'missing';
 
@@ -153,6 +162,8 @@ function reasonLabel(reason: StopReason): string {
       return '迅雷页面已关闭';
     case 'page-unavailable':
       return '迅雷页面暂不可用';
+    case 'api-unavailable':
+      return '迅雷接口暂不可用';
     case 'disabled':
       return '已关闭任务监控';
     case 'missing':
@@ -270,6 +281,7 @@ async function processSession(
 
   // 候选 id 即使过了发现窗也继续尝试，它们明确属于本次发送
   for (const id of session.candidateIds) {
+    if (Object.keys(session.tasks).length >= MAX_TASKS) break;
     if (session.tasks[id]) continue;
     const item = snapshotTasks[id];
     if (item) upsertTask(session, id, item, now);
@@ -313,11 +325,10 @@ async function processSession(
     await updateMonitor(session.requestId, { status: 'active', ...counts });
   }
 
-  if (now > session.hardUntil) return 'timeout';
-
+  // 先判终态再判硬超时：恰在 24h 边界的最后一扫里全部完成时，结论应是「完成」而不是「超时」
   if (now > session.discoverUntil) {
     const all = Object.values(session.tasks);
-    if (!all.length) return 'no-task';
+    if (!all.length) return now > session.hardUntil ? 'timeout' : 'no-task';
     const active = all.filter(
       (task) =>
         task.phase !== 'PHASE_TYPE_COMPLETE' &&
@@ -329,6 +340,8 @@ async function processSession(
       return missing > 0 && counts.failed + counts.completed === 0 ? 'missing' : 'all-terminal';
     }
   }
+
+  if (now > session.hardUntil) return 'timeout';
 
   return null;
 }
@@ -355,11 +368,20 @@ async function performScan(sessionsOverride?: MonitorSession[]): Promise<void> {
   const now = Date.now();
   const remaining: MonitorSession[] = [];
   const byTab = new Map<string, MonitorSession[]>();
+  const apiSessions: MonitorSession[] = [];
   for (const session of sessions) {
+    if (session.channel === 'api') {
+      apiSessions.push(session);
+      continue;
+    }
     const key = session.tabUrl.trim();
     const group = byTab.get(key) ?? [];
     group.push(session);
     byTab.set(key, group);
+  }
+
+  for (const session of apiSessions) {
+    await scanApiSession(session, settings, now, remaining);
   }
 
   for (const [tabUrl, group] of byTab) {
@@ -421,6 +443,66 @@ async function performScan(sessionsOverride?: MonitorSession[]): Promise<void> {
   await syncAlarm(remaining.length > 0);
 }
 
+/** 接口模式扫描：不依赖迅雷页面，按已知任务 id 直接调 drive/v1/tasks（只读） */
+async function scanApiSession(
+  session: MonitorSession,
+  settings: ReturnType<typeof getSettings>,
+  now: number,
+  remaining: MonitorSession[],
+): Promise<void> {
+  const base = session.tabUrl.trim();
+  let snapshot: TaskStateSnapshot | null = null;
+  try {
+    const space = await getDeviceSpace(base);
+    if (!space) throw new Error('未获取到设备 space');
+    const ids = [...new Set([...Object.keys(session.tasks), ...session.candidateIds])];
+    const tasks: Record<string, TaskStateItem> = {};
+    for (let index = 0; index < ids.length; index += 50) {
+      const chunk = ids.slice(index, index + 50);
+      const result = await listTasks(base, { space, ids: chunk, limit: chunk.length });
+      for (const task of result.tasks ?? []) {
+        tasks[task.id] = {
+          id: task.id,
+          name: task.name || task.file_name || '',
+          phase: task.phase,
+          progress: Number(task.progress ?? 0) || 0,
+          detail: task.message ?? '',
+          type: task.type,
+        };
+      }
+    }
+    snapshot = { currentIds: Object.keys(tasks), tasks };
+  } catch (error) {
+    console.warn('[taskMonitor] 接口模式读取任务失败:', error);
+    snapshot = null;
+  }
+
+  if (!snapshot) {
+    session.failedScans += 1;
+    if (session.failedScans > FAILED_SCAN_LIMIT) {
+      await stopSession(session, 'api-unavailable');
+    } else {
+      remaining.push(session);
+    }
+    return;
+  }
+
+  session.failedScans = 0;
+  let stopReason: StopReason | null = null;
+  try {
+    stopReason = await processSession(session, snapshot, settings, now);
+  } catch (error) {
+    console.warn('[taskMonitor] 处理监控 session 失败:', error);
+    session.failedScans += 1;
+    if (session.failedScans > FAILED_SCAN_LIMIT) stopReason = 'api-unavailable';
+  }
+  if (stopReason) {
+    await stopSession(session, stopReason);
+  } else {
+    remaining.push(session);
+  }
+}
+
 /** 每分钟由 alarm 调用；同一时间只允许一个扫描 */
 export function scanMonitors(): Promise<void> {
   return serialize(() => performScan());
@@ -436,6 +518,7 @@ export function startMonitor(input: StartMonitorInput): Promise<void> {
     const session: MonitorSession = {
       requestId: input.requestId,
       tabUrl: input.tabUrl,
+      channel: input.channel ?? 'dom',
       mode: input.mode,
       startedAt: now,
       discoverUntil: now + (input.mode === 'confirm' ? DISCOVER_MS_CONFIRM : DISCOVER_MS_IMMEDIATE),

@@ -150,9 +150,10 @@ function chooseFolder(): void {
 function handleFolder(event: Event): void {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files || []).slice(0, 5000);
-  if (!files.length) return;
+  const first = files[0];
+  if (!first) return;
   const firstPath =
-    (files[0] as File & { webkitRelativePath?: string }).webkitRelativePath || files[0].name;
+    (first as File & { webkitRelativePath?: string }).webkitRelativePath || first.name;
   const topFolder = firstPath.split('/')[0] || '本地文件夹';
   groups.value = [
     {
