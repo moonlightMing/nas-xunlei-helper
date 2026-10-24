@@ -411,6 +411,13 @@ function statusTag(item: SendHistoryEntry): { color: string; text: string } {
   return { color: 'red', text: '失败' };
 }
 
+function historyTone(status: SendHistoryEntry['status']): string {
+  if (status === 'running') return 'running';
+  if (status === 'ok') return 'done';
+  if (status === 'failed') return 'error';
+  return 'paused';
+}
+
 function matchText(item: SendHistoryEntry): string {
   const match = item.match;
   if (!match) return '';
@@ -654,33 +661,33 @@ function monitorText(item: SendHistoryEntry): string {
             </div>
 
             <a-empty v-if="!history.length && !historyLoading" description="暂无发送记录" />
-            <a-list v-else :data-source="history" :loading="historyLoading" item-layout="vertical" size="small">
-              <template #renderItem="{ item }">
-                <a-list-item>
-                  <template #actions>
+            <a-spin v-else :spinning="historyLoading">
+              <ul class="history-list">
+                <li v-for="item in history" :key="item.id" class="history-item">
+                  <div class="history-head">
+                    <span class="status" :class="historyTone(item.status)">
+                      <i class="status-dot" />
+                      {{ statusTag(item).text }}
+                    </span>
+                    <span class="history-time">{{ formatTime(item.at) }}</span>
+                    <span class="history-meta">{{ item.linkCount }} 个链接 · {{ modeLabel(item.mode) }}</span>
                     <a-button
                       v-if="item.links.length"
                       type="link"
                       size="small"
+                      class="history-retry"
                       :loading="retryingId === item.id"
                       @click="handleHistoryRetry(item)"
                     >
                       重试
                     </a-button>
-                  </template>
-                  <div class="history-head">
-                    <a-tag :color="statusTag(item).color">{{ statusTag(item).text }}</a-tag>
-                    <span class="history-time">{{ formatTime(item.at) }}</span>
-                    <span class="history-meta">
-                      {{ item.linkCount }} 个链接 · {{ modeLabel(item.mode) }}
-                    </span>
                   </div>
                   <div class="history-message">{{ item.message }}</div>
-                  <div v-if="item.match" class="history-match">{{ matchText(item) }}</div>
-                  <div v-if="item.monitor" class="history-monitor">{{ monitorText(item) }}</div>
-                </a-list-item>
-              </template>
-            </a-list>
+                  <div v-if="item.match" class="history-extra">{{ matchText(item) }}</div>
+                  <div v-if="item.monitor" class="history-extra is-monitor">{{ monitorText(item) }}</div>
+                </li>
+              </ul>
+            </a-spin>
           </a-tab-pane>
         </a-tabs>
       </div>
@@ -890,36 +897,106 @@ function monitorText(item: SendHistoryEntry): string {
   color: rgba(0, 0, 0, 0.45);
 }
 
+/* 卡片式记录列表，与 popup 任务列表同一视觉语言 */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-item {
+  padding: 9px 12px 8px;
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  background: #fafbfc;
+}
+
 .history-head {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
+  min-width: 0;
 }
 
-.history-time,
+.status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status.running {
+  color: #0958d9;
+  background: #e8f1ff;
+}
+
+.status.done {
+  color: #389e0d;
+  background: #f0f9eb;
+}
+
+.status.paused {
+  color: #d46b08;
+  background: #fff4e6;
+}
+
+.status.error {
+  color: #cf1322;
+  background: #fff1f0;
+}
+
+.history-time {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(0, 0, 0, 0.45);
+}
+
 .history-meta {
+  margin-left: auto;
+  flex: none;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+}
+
+.history-retry {
+  flex: none;
+  height: auto;
+  padding: 0 4px;
+}
+
+.history-message {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(0, 0, 0, 0.75);
+  word-break: break-all;
+}
+
+.history-extra {
+  margin-top: 2px;
   font-size: 12px;
   color: rgba(0, 0, 0, 0.45);
 }
 
-.history-message {
-  margin-top: 4px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: rgba(0, 0, 0, 0.65);
-  word-break: break-all;
-}
-
-.history-match {
-  margin-top: 2px;
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.55);
-}
-
-.history-monitor {
-  margin-top: 2px;
-  font-size: 12px;
+.history-extra.is-monitor {
   color: #1677ff;
 }
 
