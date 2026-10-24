@@ -4,13 +4,19 @@
 
 ## 项目概览
 
-- Manifest V3 浏览器扩展：把下载链接发送到 NAS 迅雷（群晖套件版 `pan-xunlei-com`），**没有 NAS 端组件，也没有后端服务**。
+- Manifest V3 浏览器扩展：把下载链接发送到 NAS 迅雷（[cnk3x/xunlei](https://github.com/cnk3x/xunlei) 提供的群晖套件版 `pan-xunlei-com`），**没有 NAS 端组件，也没有后端服务**。
 - 技术栈：WXT 0.21 + Vue 3 + TypeScript + Ant Design Vue 4 + pnpm。
 - Node.js **>= 22**（WXT 0.21 要求，部署脚本也依赖全局 `fetch` / `WebSocket`），必须使用 pnpm（仓库有 `pnpm-lock.yaml`，勿改用 npm/yarn）。
 - 发送原理：有两条可选链路，由设置项 `sendMode` 切换。**页面自动化（`dom`，默认）**复用浏览器已登录的迅雷 Web 会话，用 `chrome.scripting.executeScript` 注入脚本，按 DOM 选择器模拟「新建任务 → 填链接 → 解析 → 立即下载」，保存路径通过读取页面 Vuex 并调用面板自身的目录 action 预选。**接口直连（`api`）**不打开页面，由 `utils/xunleiApi.ts` 调用套件自身的 `drive/v1` gRPC-gateway 接口（解析 → 番号匹配 → 建任务），鉴权用套件首页下发的短期令牌，不存储账号密码。发送前有页面探针与错误分类（仅 `dom`），`dom` 模式可选择监控下载任务状态，任务监控只读复用页面 Vuex 与面板自身的 `drive/getTask`，不自行拼接任务查询请求。
 - 番号匹配：磁力/种子解析后从 BT 文件树中按番号自动勾选目标文件；默认严格模式，可切换回退；支持类型/大小/关键词/排序/每任务上限。两种模式共用 `utils/avMatch.ts` 的纯函数决策，差别只在落地方式——`dom` 调面板树组件 `setCheckedKeys`，`api` 把选中序号编码成接口的 `sub_file_index`。`api` 模式下每个链接是独立任务，未匹配的只暂停自己，不会像 `dom` 那样受单个「立即下载」按钮连累整单。配置页独立 tab，含只读规则预览（粘贴文件名、本地文件夹、当前迅雷弹窗），不上传文件。
 - 通知体系使用固定通知 ID 与 `storage.session` 保存的按钮动作，区分发送失败、路径回退、任务失败与任务完成；发送成功通知和任务完成通知默认关闭，发送失败与任务失败默认开启。
 - 当前为原型重写版。`manifest.version` 在 `wxt.config.ts` 中硬编码（现为 `0.3.0`），与 `package.json` 的 `version` 需保持同步，递增与日志规则见「版本与更新日志」。
+
+## 上游与许可
+
+- 适配后端：[cnk3x/xunlei](https://github.com/cnk3x/xunlei)（从群晖迅雷套件提取的远程下载服务）。`drive/v1` 契约实测于 3.x（v3.23.5），上游 4.0.0-beta 可能已变化。
+- 灵感来源：[Soraika/nas-thunder-helper](https://github.com/Soraika/nas-thunder-helper)。
+- 开源协议：[MIT License](LICENSE)，仓库公开在 [GitHub](https://github.com/moonlightMing/nas-xunlei-helper)。
 
 ## 常用命令
 

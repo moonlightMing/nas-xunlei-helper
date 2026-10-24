@@ -1,6 +1,15 @@
 {
   "name": "nas-xunlei-helper",
   "description": "将浏览器中的下载链接一键发送到 NAS 迅雷远程下载。",
+  "license": "MIT",
+  "homepage": "https://github.com/moonlightMing/nas-xunlei-helper#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moonlightMing/nas-xunlei-helper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/moonlightMing/nas-xunlei-helper/issues"
+  },
   "private": true,
   "version": "0.3.0",
   "type": "module",
