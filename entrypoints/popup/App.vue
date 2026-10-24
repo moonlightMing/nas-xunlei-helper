@@ -60,8 +60,11 @@ onMounted(async () => {
 
 <style scoped>
 .popup {
+  box-sizing: border-box;
   width: 560px;
-  padding: 14px 16px 10px;
+  /* 留 2px 余量：高缩放时弹窗被浏览器限宽，亚像素取整会挤出横向滚动条 */
+  max-width: calc(100% - 2px);
+  padding: 12px 14px 8px;
   background: #fff;
 }
 
@@ -69,7 +72,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .logo {
@@ -88,7 +91,11 @@ onMounted(async () => {
 }
 
 .tabs :deep(.ant-tabs-nav) {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+}
+
+.tabs :deep(.ant-tabs-tabpane) {
+  min-width: 0;
 }
 
 .footer {
@@ -96,5 +103,7 @@ onMounted(async () => {
   justify-content: center;
   gap: 16px;
   margin-top: 6px;
+  padding-top: 2px;
+  border-top: 1px solid #f0f0f0;
 }
 </style>

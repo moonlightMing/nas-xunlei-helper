@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { message } from 'ant-design-vue';
 import type { ListTasksResponse, TaskActionResponse, TaskSummary } from '@/utils/messaging';
 import { getSendErrorMeta, type SendErrorCode } from '@/utils/sendErrors';
@@ -13,13 +13,18 @@ const PHASE_LABELS: Record<string, string> = {
   PHASE_TYPE_COMPLETE: '已完成',
 };
 
-const PHASE_COLORS: Record<string, string> = {
-  PHASE_TYPE_RUNNING: 'processing',
-  PHASE_TYPE_PENDING: 'default',
-  PHASE_TYPE_PAUSED: 'warning',
+const PHASE_TONES: Record<string, string> = {
+  PHASE_TYPE_RUNNING: 'running',
+  PHASE_TYPE_PENDING: 'pending',
+  PHASE_TYPE_PAUSED: 'paused',
   PHASE_TYPE_ERROR: 'error',
-  PHASE_TYPE_COMPLETE: 'success',
+  PHASE_TYPE_COMPLETE: 'done',
 };
+
+const scopeOptions = [
+  { label: '进行中', value: 'ing' },
+  { label: '已完成', value: 'done' },
+];
 
 const scope = ref<'ing' | 'done'>('ing');
 const tasks = ref<TaskSummary[]>([]);
@@ -29,8 +34,10 @@ const errorCode = ref<string>('');
 /** 服务端建议的刷新间隔（秒），夹在 2-10 之间 */
 const intervalSeconds = ref(3);
 const pendingIds = ref<Set<string>>(new Set());
+const listRef = ref<HTMLElement | null>(null);
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+let fitKey = '';
 
 const bytes = (value: number): string => {
   if (!value || value < 0) return '0 B';
@@ -44,13 +51,48 @@ const bytes = (value: number): string => {
   return `${size >= 10 || index === 0 ? Math.round(size) : size.toFixed(1)} ${units[index]}`;
 };
 
-const speedText = (task: TaskSummary): string =>
-  task.phase === 'PHASE_TYPE_RUNNING' ? `${bytes(task.speed)}/s` : bytes(task.checkedSize);
+const statusTone = (phase: string): string => PHASE_TONES[phase] ?? 'pending';
+
+const messageTone = (phase: string): string => {
+  if (phase === 'PHASE_TYPE_ERROR') return 'error';
+  if (phase === 'PHASE_TYPE_PAUSED') return 'warn';
+  return 'info';
+};
+
+const statText = (task: TaskSummary): string => {
+  const percent = `${Math.max(0, Math.min(100, Math.round(task.progress)))}%`;
+  if (task.phase === 'PHASE_TYPE_COMPLETE') return bytes(task.totalSize);
+  if (task.phase === 'PHASE_TYPE_RUNNING') {
+    return `${percent} · ${bytes(task.speed)}/s · ${bytes(task.totalSize)}`;
+  }
+  return `${percent} · ${bytes(task.checkedSize)} / ${bytes(task.totalSize)}`;
+};
 
 const schedule = () => {
   if (timer) clearTimeout(timer);
   const delay = Math.min(10, Math.max(2, intervalSeconds.value)) * 1000;
   timer = setTimeout(() => void load(true), delay);
+};
+
+/** 弹窗被浏览器限高时压缩列表，让滚动留在列表内部，不给整个页面加滚动条 */
+const fitListHeight = async () => {
+  const key = `${scope.value}:${tasks.value.length}`;
+  if (key === fitKey) return;
+  fitKey = key;
+
+  const listEl = listRef.value;
+  if (!listEl) return;
+  listEl.style.maxHeight = '';
+  await nextTick();
+
+  for (let i = 0; i < 3; i += 1) {
+    const doc = document.documentElement;
+    const overflow = doc.scrollHeight - doc.clientHeight;
+    if (overflow <= 0) break;
+    const height = listEl.getBoundingClientRect().height;
+    listEl.style.maxHeight = `${Math.max(120, Math.round(height - overflow - 2))}px`;
+    await nextTick();
+  }
 };
 
 const load = async (silent = false) => {
@@ -84,6 +126,7 @@ const load = async (silent = false) => {
   } finally {
     loading.value = false;
     schedule();
+    void fitListHeight();
   }
 };
 
@@ -128,10 +171,12 @@ onBeforeUnmount(() => {
 <template>
   <div class="tasks">
     <div class="toolbar">
-      <a-radio-group v-model:value="scope" size="small" button-style="solid" @change="void load()">
-        <a-radio-button value="ing">进行中</a-radio-button>
-        <a-radio-button value="done">已完成</a-radio-button>
-      </a-radio-group>
+      <a-segmented
+        v-model:value="scope"
+        :options="scopeOptions"
+        size="small"
+        @change="void load()"
+      />
       <a-button size="small" :loading="loading" @click="void load()">刷新</a-button>
     </div>
 
@@ -144,25 +189,41 @@ onBeforeUnmount(() => {
     </a-alert>
 
     <a-spin :spinning="loading && tasks.length === 0">
-      <a-empty v-if="!errorText && !loading && tasks.length === 0" description="暂无任务" />
-      <ul v-else class="list">
-        <li v-for="task in tasks" :key="task.id" class="item">
-          <div class="row">
+      <p v-if="!errorText && !loading && tasks.length === 0" class="empty">
+        {{ scope === 'ing' ? '暂无进行中的任务' : '暂无已完成任务' }}
+      </p>
+      <ul v-else ref="listRef" class="list">
+        <li
+          v-for="task in tasks"
+          :key="task.id"
+          class="item"
+          :class="{ 'is-complete': task.phase === 'PHASE_TYPE_COMPLETE' }"
+        >
+          <div class="item-head">
             <span class="name" :title="task.name">{{ task.name }}</span>
-            <a-tag :color="PHASE_COLORS[task.phase] ?? 'default'">
+            <span class="status" :class="statusTone(task.phase)">
+              <i class="status-dot" />
               {{ PHASE_LABELS[task.phase] ?? task.phase }}
-            </a-tag>
+            </span>
           </div>
           <a-progress
+            v-if="task.phase !== 'PHASE_TYPE_COMPLETE'"
             :percent="Math.max(0, Math.min(100, task.progress))"
             size="small"
-            :status="task.phase === 'PHASE_TYPE_ERROR' ? 'exception' : task.phase === 'PHASE_TYPE_COMPLETE' ? 'success' : 'active'"
+            :show-info="false"
+            :status="task.phase === 'PHASE_TYPE_ERROR' ? 'exception' : 'active'"
           />
-          <div class="meta">
-            <span>{{ speedText(task) }} / {{ bytes(task.totalSize) }}</span>
+          <div class="item-meta">
+            <span class="stat">{{ statText(task) }}</span>
             <span v-if="task.realPath" class="path" :title="task.realPath">{{ task.realPath }}</span>
           </div>
-          <div v-if="task.message" class="message">{{ task.message }}</div>
+          <div
+            v-if="task.message && task.phase !== 'PHASE_TYPE_COMPLETE'"
+            class="message"
+            :class="messageTone(task.phase)"
+          >
+            {{ task.message }}
+          </div>
           <div class="ops">
             <a-button
               v-if="task.phase === 'PHASE_TYPE_RUNNING' || task.phase === 'PHASE_TYPE_PENDING'"
@@ -200,6 +261,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .toolbar {
@@ -210,31 +272,53 @@ onBeforeUnmount(() => {
 }
 
 .error {
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 
 .link {
   margin-left: 6px;
 }
 
+.empty {
+  margin: 0;
+  padding: 28px 0;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.35);
+}
+
 .list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
   max-height: 340px;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+}
+
+.list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.list::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 3px;
 }
 
 .item {
-  padding: 8px 0;
-  border-bottom: 1px solid #f0f0f0;
+  min-width: 0;
+  padding: 9px 12px 8px;
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  background: #fafbfc;
 }
 
-.item:last-child {
-  border-bottom: none;
-}
-
-.row {
+.item-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -247,16 +331,80 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: rgba(0, 0, 0, 0.88);
 }
 
-.meta {
+.status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status.running {
+  color: #0958d9;
+  background: #e8f1ff;
+}
+
+.status.pending {
+  color: #8c8c8c;
+  background: #f2f3f5;
+}
+
+.status.paused {
+  color: #d46b08;
+  background: #fff4e6;
+}
+
+.status.error {
+  color: #cf1322;
+  background: #fff1f0;
+}
+
+.status.done {
+  color: #389e0d;
+  background: #f0f9eb;
+}
+
+.item :deep(.ant-progress.ant-progress-line) {
+  margin-inline-end: 0;
+}
+
+.item :deep(.ant-progress) {
+  margin-top: 7px;
+}
+
+.item :deep(.ant-progress-inner) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.item-meta {
   display: flex;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  margin-top: 3px;
   font-size: 12px;
   color: rgba(0, 0, 0, 0.45);
+}
+
+.stat {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .path {
@@ -269,10 +417,25 @@ onBeforeUnmount(() => {
   color: rgba(0, 0, 0, 0.35);
 }
 
+.item.is-complete .item-meta {
+  margin-top: 8px;
+}
+
 .message {
-  margin-top: 2px;
+  margin-top: 4px;
   font-size: 12px;
+}
+
+.message.info {
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.message.warn {
   color: #d46b08;
+}
+
+.message.error {
+  color: #cf1322;
 }
 
 .ops {
