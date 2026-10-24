@@ -60,7 +60,7 @@
 3. 执行对应目标的部署命令。脚本内部会重新执行 `pnpm build`，不需要提前构建。
 4. **仅首次部署需要手动挂载**：调试浏览器会打开 `chrome://extensions/`；若列表中没有「NAS 迅雷助手」，开启「开发者模式」→「加载已解压的扩展程序」→ 选择项目下的 `.output/chrome-mv3` 绝对路径。之后同一 profile 的部署全自动。
 5. 在扩展设置页配置 NAS 迅雷地址，并在调试实例中打开迅雷页面登录一次。
-6. 验收：部署日志出现 `已重载扩展「NAS 迅雷助手」v...`（或回退重启日志）与 `部署完成 ✅`，且 `chrome://extensions` 中确认扩展已挂载；再按 README 的「手动测试清单」做真实 NAS 端到端验证。
+6. 验收：部署日志出现 `已重载扩展「NAS 迅雷助手」v...`（或回退重启日志）与 `部署完成 ✅`，且 `chrome://extensions` 中确认扩展已挂载；再按[开发文档的手动测试清单](docs/DEVELOPMENT.md#手动测试清单)做真实 NAS 端到端验证。
 
 ### `scripts/deploy.mjs` 的行为
 
@@ -98,7 +98,7 @@
 
 - 本仓库**没有 NAS 侧部署步骤**：不要上传文件到 NAS、不要假设有服务端接口或安装脚本。
 - 不要在 CI、无图形环境或与当前任务无关时运行 `pnpm deploy`：它会打开本地浏览器并可能重启调试实例。
-- 发布分发包用 `pnpm zip`；解压后按 README「方式二」加载。版本号同时写在 `package.json` 和 `wxt.config.ts` 的 `manifest.version`，并与 `CHANGELOG.md` 顶部条目保持一致，详见「版本与更新日志」。
+- 发布分发包用 `pnpm zip`；解压后按 [README 的安装说明](README.md#安装)加载。版本号同时写在 `package.json` 和 `wxt.config.ts` 的 `manifest.version`，并与 `CHANGELOG.md` 顶部条目保持一致，详见「版本与更新日志」。
 
 ## 代码地图
 
@@ -121,6 +121,7 @@
 | `entrypoints/popup/` | 工具栏弹窗：`a-tabs` 双页外壳（下载任务 / 发送链接）、打开设置与迅雷 |
 | `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除；`SendPanel.vue` 链接解析去重与发送结果动作 |
 | `scripts/deploy.mjs` | 本地构建与调试浏览器部署 |
+| `docs/DEVELOPMENT.md` | 面向开发者：结构、构建命令、调试部署、开发排障、手动测试清单 |
 | `wxt.config.ts` | manifest：权限（含 `alarms`）、host 权限、options 页、图标、版本 |
 | `public/icons/` | 16/48/128 像素扩展图标 |
 
@@ -203,5 +204,5 @@
 
 ## 文档同步
 
-- 修改命令、端口、环境变量、权限、部署脚本行为或浏览器兼容要求时，同步更新 **README.md** 与 **AGENTS.md**，并检查 `scripts/deploy.mjs` 顶部注释是否仍然准确。
-- README 面向使用者（安装、使用、测试清单、限制）；AGENTS.md 面向编码代理（约定、代码地图、部署细节、验证要求）。
+- 修改命令、端口、环境变量、权限、部署脚本行为或浏览器兼容要求时，同步更新 **README.md**、**docs/DEVELOPMENT.md** 与 **AGENTS.md**，并检查 `scripts/deploy.mjs` 顶部注释是否仍然准确。
+- README 面向使用者（安装、使用、限制）；[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 面向开发者（结构、构建、调试部署、测试清单）；AGENTS.md 面向编码代理（约定、代码地图、部署细节、验证要求）。
