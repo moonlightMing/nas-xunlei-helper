@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { message, Modal } from 'ant-design-vue';
 import {
   clearHistory,
@@ -40,10 +40,26 @@ interface DirNode {
   children?: DirNode[];
 }
 
+const AUTO_SAVE_DELAY_MS = 300;
+
 const loading = ref(true);
 const saving = ref(false);
+const savedRecently = ref(false);
 const testing = ref(false);
 const form = reactive<XunleiSettings>({ ...DEFAULT_SETTINGS });
+const urlTouched = ref(false);
+const pathTouched = ref(false);
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let savedFlashTimer: ReturnType<typeof setTimeout> | null = null;
+let savePending = false;
+
+const urlError = computed(() => (urlTouched.value ? validateXunleiUrl(form.xunleiUrl) : null));
+const pathError = computed(() => (pathTouched.value ? validateDownloadPath(form.downloadPath) : null));
+const saveHint = computed(() => {
+  if (saving.value) return '保存中…';
+  return savedRecently.value ? '已自动保存' : '修改后自动保存';
+});
 
 const diagnoseChecks = ref<DiagnoseCheck[]>([]);
 const diagnoseError = ref('');
@@ -67,6 +83,7 @@ onMounted(async () => {
   unwatchHistory = watchHistory((entries) => {
     history.value = entries;
   });
+  window.addEventListener('pagehide', handlePageHide);
   try {
     await ensureSettingsLoaded();
     Object.assign(form, getSettings());
@@ -79,7 +96,76 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unwatchHistory?.();
   unwatchHistory = null;
+  window.removeEventListener('pagehide', handlePageHide);
+  if (saveTimer) clearTimeout(saveTimer);
+  if (savedFlashTimer) clearTimeout(savedFlashTimer);
 });
+
+function handlePageHide(): void {
+  flushPendingSave();
+}
+
+watch(form, scheduleSave, { deep: true });
+
+/** 设置项不含 avMatch（由番号匹配 tab 独立保存），避免用旧快照覆盖 */
+function buildSavePayload(): Partial<XunleiSettings> {
+  const payload: Partial<XunleiSettings> = { ...form };
+  delete payload.avMatch;
+  payload.xunleiUrl = form.xunleiUrl.trim();
+  payload.downloadPath = form.downloadPath.trim();
+  return payload;
+}
+
+function snapshotWithoutAvMatch(input: Partial<XunleiSettings>): string {
+  const copy: Partial<XunleiSettings> = { ...input };
+  delete copy.avMatch;
+  return JSON.stringify(copy);
+}
+
+function scheduleSave(): void {
+  if (loading.value) return;
+  savePending = true;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void persistSettings();
+  }, AUTO_SAVE_DELAY_MS);
+}
+
+/** 只冲刷用户刚做出但尚未落盘的改动，不覆盖其它上下文写入的设置 */
+function flushPendingSave(): void {
+  if (!savePending) return;
+  void persistSettings();
+}
+
+async function persistSettings(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (loading.value) return;
+  const payload = buildSavePayload();
+  if (snapshotWithoutAvMatch(payload) === snapshotWithoutAvMatch(getSettings())) {
+    savePending = false;
+    return;
+  }
+  savePending = false;
+
+  saving.value = true;
+  try {
+    await saveSettings(payload);
+    savedRecently.value = true;
+    if (savedFlashTimer) clearTimeout(savedFlashTimer);
+    savedFlashTimer = setTimeout(() => {
+      savedRecently.value = false;
+      savedFlashTimer = null;
+    }, 1600);
+  } catch {
+    message.error('设置保存失败，请重试');
+  } finally {
+    saving.value = false;
+  }
+}
 
 async function loadHistory(): Promise<void> {
   historyLoading.value = true;
@@ -89,36 +175,6 @@ async function loadHistory(): Promise<void> {
     historyLoading.value = false;
   }
 }
-
-const handleSave = async () => {
-  const urlError = validateXunleiUrl(form.xunleiUrl);
-  if (urlError) {
-    message.warning(urlError);
-    return;
-  }
-  const pathError = validateDownloadPath(form.downloadPath);
-  if (pathError) {
-    message.warning(pathError);
-    return;
-  }
-  saving.value = true;
-  try {
-    // 番号匹配由独立 tab 保存，设置页保存时不要用旧内存值覆盖它
-    const baseSettings: Partial<XunleiSettings> = { ...form };
-    delete baseSettings.avMatch;
-    await saveSettings({
-      ...baseSettings,
-      xunleiUrl: form.xunleiUrl.trim(),
-      downloadPath: form.downloadPath.trim(),
-    });
-    Object.assign(form, getSettings());
-    message.success('设置已保存');
-  } catch {
-    message.error('保存失败，请重试');
-  } finally {
-    saving.value = false;
-  }
-};
 
 const handleTestConnection = async () => {
   const urlError = validateXunleiUrl(form.xunleiUrl);
@@ -277,7 +333,8 @@ const handleSelectDir = (_keys: unknown, info: { node?: unknown }): void => {
   }
   form.downloadPath = data.path;
   dirModalOpen.value = false;
-  message.success(`已选择 ${data.path}，保存后生效`);
+  void persistSettings();
+  message.success(`已选择 ${data.path}`);
 };
 
 const handleHistoryRetry = async (item: SendHistoryEntry): Promise<void> => {
@@ -393,7 +450,7 @@ function monitorText(item: SendHistoryEntry): string {
             <a-alert v-if="showOnboarding" type="info" show-icon class="onboarding">
               <template #message>三步开始使用</template>
               <template #description>
-                1. 填写 NAS 迅雷地址并保存；2. 点击「打开迅雷页面」并完成登录；
+                1. 填写 NAS 迅雷地址；2. 点击「打开迅雷页面」并完成登录；
                 3. 在任意网页右键链接/选中文本，或打开工具栏弹窗发送。
               </template>
             </a-alert>
@@ -404,10 +461,13 @@ function monitorText(item: SendHistoryEntry): string {
                 <a-input
                   v-model:value="form.xunleiUrl"
                   placeholder="http://192.168.5.2:2345/webman/3rdparty/pan-xunlei-com/index.cgi/#/home"
+                  :status="urlError ? 'error' : undefined"
                   allow-clear
+                  @blur="urlTouched = true"
                 />
                 <template #extra>
-                  <span class="extra">
+                  <span v-if="urlError" class="error-text">{{ urlError }}</span>
+                  <span v-else class="extra">
                     迅雷 NAS 套件（群晖 webman/3rdparty/pan-xunlei-com）的 Web 页面地址；发送前请先在浏览器登录一次迅雷。
                   </span>
                 </template>
@@ -416,11 +476,18 @@ function monitorText(item: SendHistoryEntry): string {
               <a-form-item>
                 <template #label><span class="label">默认下载位置</span></template>
                 <div class="path-row">
-                  <a-input v-model:value="form.downloadPath" placeholder="/downloads/movies" allow-clear />
+                  <a-input
+                    v-model:value="form.downloadPath"
+                    placeholder="/downloads/movies"
+                    :status="pathError ? 'error' : undefined"
+                    allow-clear
+                    @blur="pathTouched = true"
+                  />
                   <a-button @click="handleOpenDirPicker">从迅雷选择</a-button>
                 </div>
                 <template #extra>
-                  <span class="extra">
+                  <span v-if="pathError" class="error-text">{{ pathError }}</span>
+                  <span v-else class="extra">
                     填写迅雷面板中显示的路径（如 /downloads/movies），不是 NAS 宿主机路径；留空则使用迅雷当前默认目录。
                     目录需已在迅雷中创建，插件不会自动建目录。
                   </span>
@@ -540,10 +607,10 @@ function monitorText(item: SendHistoryEntry): string {
 
               <a-form-item class="actions">
                 <a-space wrap>
-                  <a-button type="primary" :loading="saving" @click="handleSave">保存设置</a-button>
                   <a-button :loading="testing" @click="handleTestConnection">测试连接</a-button>
                   <a-button @click="handleOpenXunlei">打开迅雷页面</a-button>
                   <a-button danger @click="handleReset">恢复默认</a-button>
+                  <span class="autosave-hint">{{ saveHint }}</span>
                 </a-space>
               </a-form-item>
 
@@ -754,6 +821,17 @@ function monitorText(item: SendHistoryEntry): string {
 .actions {
   margin-top: 20px;
   margin-bottom: 0;
+}
+
+.autosave-hint {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.error-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #cf1322;
 }
 
 .diagnose {

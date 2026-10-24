@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { message, Modal } from 'ant-design-vue';
 import {
   cloneAvMatchSettings,
@@ -17,11 +17,24 @@ import AvMatchPreview from './AvMatchPreview.vue';
 
 const props = defineProps<{ active: boolean }>();
 
+const AUTO_SAVE_DELAY_MS = 300;
+
 const loading = ref(true);
 const saving = ref(false);
+const savedRecently = ref(false);
 const form = reactive<AvMatchSettings>(cloneAvMatchSettings(DEFAULT_AV_MATCH_SETTINGS));
 const manualCodesText = ref('');
 const keywordsText = ref('');
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let savedFlashTimer: ReturnType<typeof setTimeout> | null = null;
+let savePending = false;
+
+const categoryError = computed(() => !form.keepCategories.length);
+const saveHint = computed(() => {
+  if (saving.value) return '保存中…';
+  return savedRecently.value ? '已自动保存' : '修改后自动保存';
+});
 
 const manualParsed = computed(() => parseManualCodes(manualCodesText.value));
 const previewSettings = computed<AvMatchSettings>(() => ({
@@ -54,40 +67,83 @@ async function load(): Promise<void> {
 }
 
 onMounted(() => {
+  window.addEventListener('pagehide', handlePageHide);
   void load();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pagehide', handlePageHide);
+  if (saveTimer) clearTimeout(saveTimer);
+  if (savedFlashTimer) clearTimeout(savedFlashTimer);
 });
 
 watch(
   () => props.active,
   (active) => {
-    if (active) void load();
+    if (!active) return;
+    flushPendingSave();
+    void load();
   },
 );
 
-async function handleSave(): Promise<void> {
-  if (!form.keepCategories.length) {
-    message.warning('至少保留一种文件类型');
+watch(form, scheduleSave, { deep: true });
+watch([manualCodesText, keywordsText], scheduleSave);
+
+function handlePageHide(): void {
+  flushPendingSave();
+}
+
+function buildPayload(): AvMatchSettings {
+  return {
+    ...form,
+    manualCodes: parseManualCodes(manualCodesText.value).codes,
+    excludeKeywords: parseExcludeKeywords(keywordsText.value),
+    keepCategories: [...form.keepCategories],
+  };
+}
+
+function scheduleSave(): void {
+  if (loading.value) return;
+  savePending = true;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void persistSettings();
+  }, AUTO_SAVE_DELAY_MS);
+}
+
+/** 只冲刷用户刚做出但尚未落盘的改动；切回 tab 时不能拿旧表单覆盖存储 */
+function flushPendingSave(): void {
+  if (!savePending) return;
+  void persistSettings();
+}
+
+async function persistSettings(): Promise<void> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  // 未勾选任何类型时保持上次保存的规则，等用户改回来再落盘
+  if (loading.value || categoryError.value) return;
+
+  const payload = buildPayload();
+  if (JSON.stringify(payload) === JSON.stringify(getSettings().avMatch)) {
+    savePending = false;
     return;
   }
+  savePending = false;
+
   saving.value = true;
   try {
-    const manual = parseManualCodes(manualCodesText.value);
-    await saveAvMatchSettings({
-      ...form,
-      manualCodes: manual.codes,
-      excludeKeywords: parseExcludeKeywords(keywordsText.value),
-    });
-    const saved = getSettings().avMatch;
-    Object.assign(form, cloneAvMatchSettings(saved));
-    manualCodesText.value = saved.manualCodes.join('\n');
-    keywordsText.value = saved.excludeKeywords.join('，');
-    if (manual.invalid.length) {
-      message.warning(`已保存；${manual.invalid.length} 行无法识别番号，已忽略`);
-    } else {
-      message.success('番号匹配设置已保存');
-    }
+    await saveAvMatchSettings(payload);
+    savedRecently.value = true;
+    if (savedFlashTimer) clearTimeout(savedFlashTimer);
+    savedFlashTimer = setTimeout(() => {
+      savedRecently.value = false;
+      savedFlashTimer = null;
+    }, 1600);
   } catch {
-    message.error('保存失败，请重试');
+    message.error('番号匹配设置保存失败，请重试');
   } finally {
     saving.value = false;
   }
@@ -169,7 +225,8 @@ function handleReset(): void {
           <template #label><span class="label">保留文件类型</span></template>
           <a-checkbox-group v-model:value="form.keepCategories" :options="categoryOptions" />
           <template #extra>
-            <span class="extra">未勾选的类型会被过滤；至少保留一种。默认只保留视频。</span>
+            <span v-if="categoryError" class="error-text">至少保留一种文件类型</span>
+            <span v-else class="extra">未勾选的类型会被过滤；至少保留一种。默认只保留视频。</span>
           </template>
         </a-form-item>
 
@@ -245,10 +302,8 @@ function handleReset(): void {
 
         <a-form-item class="actions">
           <a-space wrap>
-            <a-button type="primary" :loading="saving" @click="handleSave">
-              保存番号匹配设置
-            </a-button>
             <a-button danger @click="handleReset">恢复默认</a-button>
+            <span class="autosave-hint">{{ saveHint }}</span>
           </a-space>
         </a-form-item>
       </a-form>
@@ -335,5 +390,16 @@ function handleReset(): void {
 
 .actions {
   margin-top: 18px;
+}
+
+.autosave-hint {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.error-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #cf1322;
 }
 </style>
