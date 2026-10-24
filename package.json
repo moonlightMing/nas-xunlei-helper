@@ -2,7 +2,7 @@
   "name": "nas-xunlei-helper",
   "description": "将浏览器中的下载链接一键发送到 NAS 迅雷远程下载。",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",

@@ -315,4 +315,5 @@ NAS 上已经有一个指向同一资源的下载任务。迅雷在这种情况�
 
 ## 相关文档
 
+- [CHANGELOG.md](CHANGELOG.md)：版本更新日志
 - [AGENTS.md](AGENTS.md)：面向 AI 编码代理的项目约定、完整部署步骤与修改注意事项

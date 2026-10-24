@@ -10,7 +10,7 @@
 - 发送原理：有两条可选链路，由设置项 `sendMode` 切换。**页面自动化（`dom`，默认）**复用浏览器已登录的迅雷 Web 会话，用 `chrome.scripting.executeScript` 注入脚本，按 DOM 选择器模拟「新建任务 → 填链接 → 解析 → 立即下载」，保存路径通过读取页面 Vuex 并调用面板自身的目录 action 预选。**接口直连（`api`）**不打开页面，由 `utils/xunleiApi.ts` 调用套件自身的 `drive/v1` gRPC-gateway 接口（解析 → 番号匹配 → 建任务），鉴权用套件首页下发的短期令牌，不存储账号密码。发送前有页面探针与错误分类（仅 `dom`），`dom` 模式可选择监控下载任务状态，任务监控只读复用页面 Vuex 与面板自身的 `drive/getTask`，不自行拼接任务查询请求。
 - 番号匹配：磁力/种子解析后从 BT 文件树中按番号自动勾选目标文件；默认严格模式，可切换回退；支持类型/大小/关键词/排序/每任务上限。两种模式共用 `utils/avMatch.ts` 的纯函数决策，差别只在落地方式——`dom` 调面板树组件 `setCheckedKeys`，`api` 把选中序号编码成接口的 `sub_file_index`。`api` 模式下每个链接是独立任务，未匹配的只暂停自己，不会像 `dom` 那样受单个「立即下载」按钮连累整单。配置页独立 tab，含只读规则预览（粘贴文件名、本地文件夹、当前迅雷弹窗），不上传文件。
 - 通知体系使用固定通知 ID 与 `storage.session` 保存的按钮动作，区分发送失败、路径回退、任务失败与任务完成；发送成功通知和任务完成通知默认关闭，发送失败与任务失败默认开启。
-- 当前为原型重写版。`manifest.version` 在 `wxt.config.ts` 中硬编码（现为 `0.2.0`），与 `package.json` 的 `version` 需保持同步。
+- 当前为原型重写版。`manifest.version` 在 `wxt.config.ts` 中硬编码（现为 `0.3.0`），与 `package.json` 的 `version` 需保持同步，递增与日志规则见「版本与更新日志」。
 
 ## 常用命令
 
@@ -25,6 +25,16 @@
 | `pnpm deploy` | 构建并部署到 Chrome 调试实例（端口 9223） |
 | `pnpm deploy:cent` | 构建并部署到 Cent Browser 调试实例（端口 9224） |
 | `node scripts/deploy.mjs --browser=edge` | 构建并部署到 Edge 调试实例（端口 9225） |
+
+## 版本与更新日志
+
+- **三处同步**：`package.json` 的 `version`、`wxt.config.ts` 的 `manifest.version`、[CHANGELOG.md](CHANGELOG.md) 顶部条目必须在同一次改动中一起更新，版本号完全一致。`wxt.config.ts` 是 manifest 版本的唯一来源，不要在其他文件硬编码版本。
+- **自动递增**：任何影响扩展行为的改动（`feat`、`fix`、有行为变化的 `refactor`）都要在同一次提交里递增版本并补更新日志，不需要用户额外提醒。纯文档、注释、格式化、锁文件更新不动版本。
+- **递增规则（0.x 阶段）**：新功能 → 次版本 +1（如 `0.3.0` → `0.4.0`）；缺陷修复或小幅调整 → 补丁 +1（如 `0.3.0` → `0.3.1`）；破坏性变更或整体重写 → 次版本 +1 并在日志标注「破坏性变更」。1.0 之后按标准 SemVer（major/minor/patch）。
+- **一个工作批次只递增一次**：同一批未发布的多个 commit 共用目标版本，以该批次最后一个提交定稿，不要每个 commit 各 bump 一次。
+- **日志格式**：`## [x.y.z] - YYYY-MM-DD`，最新版本在最上方；分类使用 `新增 / 修复 / 调整 / 文档 / 验证`，只写用户可感知的变化，不堆内部实现细节。
+- **提交前核对**：`pnpm check` 通过，并确认三处版本号一致、CHANGELOG 顶部条目与本次改动相符。
+- 需要分发时执行 `pnpm zip`，产物名自动带版本号；不要自动创建 git tag，除非用户明确要求。
 
 ## 部署步骤
 
@@ -83,7 +93,7 @@
 
 - 本仓库**没有 NAS 侧部署步骤**：不要上传文件到 NAS、不要假设有服务端接口或安装脚本。
 - 不要在 CI、无图形环境或与当前任务无关时运行 `pnpm deploy`：它会打开本地浏览器并可能重启调试实例。
-- 发布分发包用 `pnpm zip`；解压后按 README「方式二」加载。版本号目前同时写在 `package.json` 和 `wxt.config.ts` 的 `manifest.version`，发版时两处同步修改。
+- 发布分发包用 `pnpm zip`；解压后按 README「方式二」加载。版本号同时写在 `package.json` 和 `wxt.config.ts` 的 `manifest.version`，并与 `CHANGELOG.md` 顶部条目保持一致，详见「版本与更新日志」。
 
 ## 代码地图
 
