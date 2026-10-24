@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { message } from 'ant-design-vue';
 import type { ListTasksResponse, TaskActionResponse, TaskSummary } from '@/utils/messaging';
 import { getSendErrorMeta, type SendErrorCode } from '@/utils/sendErrors';
@@ -34,10 +34,8 @@ const errorCode = ref<string>('');
 /** 服务端建议的刷新间隔（秒），夹在 2-10 之间 */
 const intervalSeconds = ref(3);
 const pendingIds = ref<Set<string>>(new Set());
-const listRef = ref<HTMLElement | null>(null);
 
 let timer: ReturnType<typeof setTimeout> | null = null;
-let fitKey = '';
 /** 卸载后不再排下一轮轮询，避免在途请求返回时又把定时器拉起来 */
 let unmounted = false;
 
@@ -77,27 +75,6 @@ const schedule = () => {
   timer = setTimeout(() => void load(true), delay);
 };
 
-/** 弹窗被浏览器限高时压缩列表，让滚动留在列表内部，不给整个页面加滚动条 */
-const fitListHeight = async () => {
-  const key = `${scope.value}:${tasks.value.length}`;
-  if (key === fitKey) return;
-  fitKey = key;
-
-  const listEl = listRef.value;
-  if (!listEl) return;
-  listEl.style.maxHeight = '';
-  await nextTick();
-
-  for (let i = 0; i < 3; i += 1) {
-    const doc = document.documentElement;
-    const overflow = doc.scrollHeight - doc.clientHeight;
-    if (overflow <= 0) break;
-    const height = listEl.getBoundingClientRect().height;
-    listEl.style.maxHeight = `${Math.max(120, Math.round(height - overflow - 2))}px`;
-    await nextTick();
-  }
-};
-
 /** 静默轮询失败时保留旧列表，只叠加错误提示，避免列表闪空再恢复 */
 const load = async (silent = false) => {
   if (!silent) loading.value = true;
@@ -130,7 +107,6 @@ const load = async (silent = false) => {
   } finally {
     loading.value = false;
     schedule();
-    void fitListHeight();
   }
 };
 
@@ -197,7 +173,7 @@ onBeforeUnmount(() => {
       <p v-if="!errorText && !loading && tasks.length === 0" class="empty">
         {{ scope === 'ing' ? '暂无进行中的任务' : '暂无已完成任务' }}
       </p>
-      <ul v-else ref="listRef" class="list">
+      <ul v-else class="list">
         <li
           v-for="task in tasks"
           :key="task.id"
@@ -289,7 +265,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -308,10 +284,12 @@ onBeforeUnmount(() => {
   margin-left: 6px;
 }
 
-/* auto 上下边距让空提示在拉伸后的面板里垂直居中（a-spin 有两层包装需要一起拉伸） */
+/* auto 上下边距让空提示在拉伸后的面板里垂直居中（a-spin 有两层包装需要一起拉伸）。
+   basis 必须 auto：弹窗高度按内容自适应，basis 0 会让内容高度对自动计高不可见，
+   弹窗被冻结在初始高度，列表提前出现内部滚动条 */
 .tasks :deep(.ant-spin-nested-loading),
 .tasks :deep(.ant-spin-container) {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -325,6 +303,9 @@ onBeforeUnmount(() => {
   color: rgba(0, 0, 0, 0.35);
 }
 
+/* 弹性吃满面板剩余高度并在列表内部滚动（文档级已在 style.css 禁滚）；
+   basis auto 让任务自然高度参与弹窗自动计高（弹窗随之长高），
+   340px 上限之后才在列表内部滚动 */
 .list {
   display: flex;
   flex-direction: column;
@@ -332,24 +313,19 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: 0;
   list-style: none;
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: 340px;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
-}
-
-.list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.list::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.18);
-  border-radius: 3px;
+  overscroll-behavior: contain;
 }
 
 .item {
+  /* 保持自然高度不被列表容器压缩（压缩会裁内容而不是出滚动条） */
+  flex: none;
   min-width: 0;
+  overflow: hidden;
   padding: 9px 12px 8px;
   border: 1px solid #f0f0f0;
   border-radius: 10px;

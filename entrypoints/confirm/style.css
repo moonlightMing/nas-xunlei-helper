@@ -16,3 +16,33 @@ body {
 #app {
   height: 100%;
 }
+
+/* 文档级滚动条彻底不渲染（与 popup 同一双保险，针对 Cent 自绘滚动条
+   无视 overflow:hidden 的行为），滚动只发生在 dialog-body/tree 内部 */
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* 细滚动条全局样式：不用 scrollbar-width/color 标准属性——
+   Chromium 里一旦设置了它们，::-webkit-scrollbar 自定义就整体失效 */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

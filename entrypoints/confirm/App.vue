@@ -676,19 +676,6 @@ function closeWindow(): void {
   min-height: 0;
   overflow-y: auto;
   padding: 12px 16px 10px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
-}
-
-.dialog-body::-webkit-scrollbar,
-.tree::-webkit-scrollbar {
-  width: 6px;
-}
-
-.dialog-body::-webkit-scrollbar-thumb,
-.tree::-webkit-scrollbar-thumb {
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.18);
 }
 
 .dialog-foot {

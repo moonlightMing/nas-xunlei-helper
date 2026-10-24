@@ -182,6 +182,16 @@ const handlePrimaryAction = () => {
 </template>
 
 <style scoped>
+/* 内容超出弹窗剩余高度时在页签内部滚动，页脚始终可见（滚动条按需出现）。
+   basis auto 让内容高度参与弹窗自动计高 */
+.send {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
 .meta {
   display: flex;
   justify-content: space-between;

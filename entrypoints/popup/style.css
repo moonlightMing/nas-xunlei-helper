@@ -1,9 +1,24 @@
 /* 弹窗根节点：560px 是期望宽度，但浏览器缩放后可用宽度可能变小，
-   max-width 让内容跟随可视宽度回流，overflow-x clip 消除亚像素取整产生的横向滚动条 */
+   max-width 让内容跟随可视宽度回流。
+   文档级滚动条一律禁止（overflow: hidden）：高 DPI 缩放下 popup 视口尺寸
+   常带亚像素误差，min-height:100vh 之类写法会让 scrollHeight 超出视口
+   0.x px，从而在文档上渲染出一条「空轨道」滚动条（Cent 等未启用
+   overlay 滚动条的浏览器尤其明显）。滚动只应发生在任务列表内部。 */
 html {
   width: 560px;
   max-width: 100%;
-  overflow-x: clip;
+  overflow: hidden;
+}
+
+/* 双保险针对 Cent 自绘滚动条：Cent Browser 的滚动条实现会无视页面的
+   overflow:hidden 和 html 单独作用域的 display:none，在文档零溢出时仍画出
+   占据布局的文档级滚动条。实测必须 html+body 同时作用域并加 !important
+   才能压制（X3 组合），列表内部的 6px 滚动条不受影响 */
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 body {
@@ -12,11 +27,34 @@ body {
   background: #fff;
 }
 
-/* Chrome 的 popup 视口高度不随内容收缩（高缩放下尤甚），需要整链撑满视口，
-   让 App.vue 里的页脚能吸底而不是悬在内容下方 */
+/* 高度链必须用 100vh 而不是 100%：popup 窗口高度随内容自适应，首次布局时
+   视口高度尚未确定，100% 会坍缩成 0 把窗口压扁（高缩放下尤甚）。
+   整链撑满视口，让 App.vue 里的页脚能吸底而不是悬在内容下方 */
 #app {
   min-width: 0;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+/* 细滚动条全局样式：不用 scrollbar-width/color 标准属性——
+   Chromium 里一旦设置了它们，::-webkit-scrollbar 自定义就整体失效，
+   只能得到不可定制的 thin 滚动条 */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }

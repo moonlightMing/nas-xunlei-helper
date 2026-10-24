@@ -7,6 +7,8 @@ import TasksPanel from './components/TasksPanel.vue';
 const settingsReady = ref(false);
 const settingsLoading = ref(true);
 const activeTab = ref('tasks');
+/** 弹窗上直接显示版本号，便于核对浏览器实际运行的构建 */
+const version = chrome.runtime.getManifest().version;
 
 const handleOpenSettings = async () => {
   await chrome.runtime.openOptionsPage();
@@ -43,6 +45,7 @@ watch(activeTab, () => {
     <header class="header">
       <img src="/icons/48.png" alt="logo" class="logo" />
       <span class="title">NAS 迅雷助手</span>
+      <span class="version">v{{ version }}</span>
     </header>
 
     <a-alert v-if="!settingsLoading && !settingsReady" type="warning" show-icon class="notice">
@@ -71,7 +74,7 @@ watch(activeTab, () => {
 <style scoped>
 .popup {
   box-sizing: border-box;
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -109,12 +112,19 @@ watch(activeTab, () => {
   color: rgba(0, 0, 0, 0.88);
 }
 
+.version {
+  margin-left: auto;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.3);
+  font-variant-numeric: tabular-nums;
+}
+
 .notice {
   margin-bottom: 10px;
 }
 
 .tabs {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -124,11 +134,12 @@ watch(activeTab, () => {
   margin-bottom: 8px;
 }
 
-/* 内容区随弹窗剩余高度拉伸，空状态提示得以在剩余空间内垂直居中 */
+/* 内容区随弹窗剩余高度拉伸，空状态提示得以在剩余空间内垂直居中。
+   basis 必须 auto（同 TasksPanel）：弹窗按内容自适应高度，basis 0 会冻结弹窗高度 */
 .tabs :deep(.ant-tabs-content-holder),
 .tabs :deep(.ant-tabs-content),
 .tabs :deep(.ant-tabs-tabpane) {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
