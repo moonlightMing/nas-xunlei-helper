@@ -319,7 +319,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   margin: 0;
-  padding: 0;
+  /* 底部内边距让滚动到列表末尾时最后一张卡片不贴着容器下边缘 */
+  padding: 0 0 8px;
   list-style: none;
   flex: 1 1 auto;
   min-height: 0;
@@ -364,7 +365,7 @@ onBeforeUnmount(() => {
   gap: 5px;
   height: 20px;
   padding: 0 8px;
-  border-radius: 999px;
+  border-radius: 6px;
   font-size: 11px;
   line-height: 1;
   white-space: nowrap;
