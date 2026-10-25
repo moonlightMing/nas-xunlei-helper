@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ensureSettingsLoaded, getSettings } from '@/utils/settings';
+import { schedulePopupFit, watchPopupHeight } from '@/utils/popupFit';
 import SendPanel from './components/SendPanel.vue';
 import TasksPanel from './components/TasksPanel.vue';
 
@@ -20,13 +21,22 @@ const handleOpenXunlei = async () => {
   window.close();
 };
 
+let stopFitWatcher: (() => void) | null = null;
+
 onMounted(async () => {
+  stopFitWatcher = watchPopupHeight();
+  schedulePopupFit();
   try {
     await ensureSettingsLoaded();
     settingsReady.value = Boolean(getSettings().xunleiUrl.trim());
   } finally {
     settingsLoading.value = false;
   }
+});
+
+onBeforeUnmount(() => {
+  stopFitWatcher?.();
+  stopFitWatcher = null;
 });
 
 /* 切走页签后旧面板会被加上 aria-hidden，焦点留在其中（如链接输入框）会触发浏览器可访问性警告 */
@@ -75,6 +85,9 @@ watch(activeTab, () => {
 .popup {
   box-sizing: border-box;
   flex: 1 1 auto;
+  /* #app 被钉到视口高度（弹窗被浏览器限高）后必须允许收缩，
+     否则这里的自动最小尺寸（内容高）会挡住压缩，溢出依旧不可达 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -99,6 +112,8 @@ watch(activeTab, () => {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+  /* #app 被钉到视口高度（弹窗被浏览器限高）后，压缩只应发生在页签内的滚动区 */
+  flex-shrink: 0;
 }
 
 .logo {
@@ -121,6 +136,7 @@ watch(activeTab, () => {
 
 .notice {
   margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
 .tabs {
@@ -156,5 +172,6 @@ watch(activeTab, () => {
   margin-top: auto;
   padding-top: 8px;
   border-top: 1px solid #f0f0f0;
+  flex-shrink: 0;
 }
 </style>

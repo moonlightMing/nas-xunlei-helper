@@ -228,6 +228,11 @@ function onFileChange(index: number, fileId: string, event: { target?: { checked
   setFile(index, fileId, Boolean(event?.target?.checked));
 }
 
+/** 对齐迅雷原生弹窗的「仅选中此项」：清掉同任务其它勾选，只保留当前文件 */
+function selectOnly(index: number, fileId: string): void {
+  stateOf(index).selected = new Set([fileId]);
+}
+
 function toggleAll(index: number, task: ConfirmTask): void {
   const state = stateOf(index);
   const all = task.files.length > 0 && task.files.every((file) => state.selected.has(file.id));
@@ -571,6 +576,14 @@ function closeWindow(): void {
                       aria-hidden="true"
                     />
                     <span class="row-name" :title="row.file?.path || row.name">{{ row.name }}</span>
+                    <button
+                      v-if="row.file"
+                      type="button"
+                      class="row-only"
+                      @click.stop="selectOnly(index, row.file.id)"
+                    >
+                      仅选中此项
+                    </button>
                     <span class="row-size">{{ row.size ? formatFileSize(row.size) : '' }}</span>
                   </div>
                 </div>
@@ -893,6 +906,24 @@ function closeWindow(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.row-only {
+  flex: none;
+  display: none;
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11px;
+  line-height: 1;
+  color: #3f85ff;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.row:hover .row-only {
+  display: block;
 }
 
 .row-size {

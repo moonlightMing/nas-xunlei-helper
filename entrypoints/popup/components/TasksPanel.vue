@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { message } from 'ant-design-vue';
 import type { ListTasksResponse, TaskActionResponse, TaskSummary } from '@/utils/messaging';
+import { schedulePopupFit } from '@/utils/popupFit';
 import { getSendErrorMeta, type SendErrorCode } from '@/utils/sendErrors';
 import type { XunleiPhase } from '@/utils/xunleiApi';
 
@@ -107,6 +108,8 @@ const load = async (silent = false) => {
   } finally {
     loading.value = false;
     schedule();
+    // 钉住状态下任务增减只改变列表内部滚动量、不触发 body 尺寸变化，需手动安排复核
+    schedulePopupFit();
   }
 };
 
@@ -266,6 +269,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   flex: 1 1 auto;
+  /* 弹窗被限高、#app 钉到视口高度后，这里必须可收缩才能把压缩传给列表 */
+  min-height: 0;
   min-width: 0;
 }
 
@@ -274,10 +279,12 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .error {
   margin-bottom: 0;
+  flex-shrink: 0;
 }
 
 .link {
@@ -305,7 +312,8 @@ onBeforeUnmount(() => {
 
 /* 弹性吃满面板剩余高度并在列表内部滚动（文档级已在 style.css 禁滚）；
    basis auto 让任务自然高度参与弹窗自动计高（弹窗随之长高），
-   340px 上限之后才在列表内部滚动 */
+   340px 上限之后才在列表内部滚动；弹窗被限高时剩余空间不足 340px，
+   随 #app 钉住进一步压缩，保证列表底边与页脚始终可达 */
 .list {
   display: flex;
   flex-direction: column;

@@ -183,13 +183,18 @@ const handlePrimaryAction = () => {
 
 <style scoped>
 /* 内容超出弹窗剩余高度时在页签内部滚动，页脚始终可见（滚动条按需出现）。
-   basis auto 让内容高度参与弹窗自动计高 */
+   basis auto 让内容高度参与弹窗自动计高；
+   弹窗被浏览器限高、#app 钉到视口后这里高度确定，子项不收缩、整体滚动 */
 .send {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+}
+
+.send > :deep(*) {
+  flex-shrink: 0;
 }
 
 .meta {

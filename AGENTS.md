@@ -115,10 +115,11 @@
 | `utils/xunleiAutomation.ts` | 迅雷页面选择器、步骤注入、错误/登录识别、路径解析、目录列表、任务读取、BT 文件树只读/应用 |
 | `utils/xunleiApi.ts` | 接口模式客户端：`uiauth` 令牌提取与缓存、`drive/v1` 调用、解析/拍平/`sub_file_index` 编码、目录与任务读写 |
 | `utils/confirm.ts` | 接口模式确认窗口：待确认任务 `storage.session` 读写、文件树还原、勾选→`sub_file_index` 的纯函数 |
-| `entrypoints/confirm/` | 自绘的确认下载窗口（Vue）：文件勾选/扩展名筛选、任务名编辑、下载目录、提交与取消 |
+| `entrypoints/confirm/` | 自绘的确认下载窗口（Vue）：文件勾选/仅选中此项/扩展名筛选、任务名编辑、下载目录、提交与取消 |
 | `utils/history.ts` | 发送记录、监控摘要回写、中断标记、清空与监听 |
 | `utils/notifications.ts` | 固定通知 ID、按钮动作、发送/任务通知策略 |
 | `utils/taskMonitor.ts` | 任务监控 session、1 分钟 alarm、状态比对、合并通知 |
+| `utils/popupFit.ts` | 弹窗被浏览器限高时把 `#app` 钉到视口高度，让列表压缩到可见空间内滚动（仅在文档真实溢出时写入样式） |
 | `entrypoints/options/` | 控制面板：设置、番号匹配、测试连接、目录树、发送记录、引导 |
 | `entrypoints/options/components/` | `AvMatchPanel.vue` 配置表单、`AvMatchPreview.vue` 只读规则预览 |
 | `entrypoints/popup/` | 工具栏弹窗：`a-tabs` 双页外壳（下载任务 / 发送链接）、打开设置与迅雷 |

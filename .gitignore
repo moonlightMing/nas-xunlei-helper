@@ -5,9 +5,7 @@ node_modules
 !.env.example
 *.log
 .DS_Store
-.debug-profile
-.debug-profile-cent
-.debug-profile-edge
+.debug-profile*
 chrome
 .zcode
 .serena
