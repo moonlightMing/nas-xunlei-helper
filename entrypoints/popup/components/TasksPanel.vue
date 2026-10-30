@@ -206,7 +206,7 @@ onBeforeUnmount(() => {
       />
       <span class="toolbar-actions">
         <a-dropdown :trigger="['click']" placement="bottomRight">
-          <a-button size="small" title="排序方式，再次点击当前项可切换升 / 降序">
+          <a-button size="small" class="sort-btn" title="排序方式，再次点击当前项可切换升 / 降序">
             {{ sortButtonLabel }}
           </a-button>
           <template #overlay>
@@ -217,7 +217,7 @@ onBeforeUnmount(() => {
             </a-menu>
           </template>
         </a-dropdown>
-        <a-button size="small" :loading="loading" @click="void load()">刷新</a-button>
+        <a-button size="small" class="refresh-btn" :loading="loading" @click="void load()">刷新</a-button>
       </span>
     </div>
 
@@ -344,6 +344,17 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   flex: none;
+}
+
+/* 刷新按钮 loading 时 spinner 会加宽按钮、排序按钮标签长短不一
+   （进行中/已完成偏好独立，切页签时标签也会换），
+   两者都按最宽形态固定宽度，排序按钮在工具栏里不再左右漂移 */
+.sort-btn {
+  min-width: 82px;
+}
+
+.refresh-btn {
+  min-width: 56px;
 }
 
 .error {
