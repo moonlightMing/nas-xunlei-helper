@@ -90,6 +90,8 @@ export interface TaskSummary {
   /** NAS 上的实际路径 */
   realPath: string;
   message: string;
+  /** 创建时间（epoch 毫秒），服务端未返回或解析失败时为 0 */
+  createdAt: number;
 }
 
 export interface ListTasksMessage {

@@ -119,11 +119,12 @@
 | `utils/history.ts` | 发送记录、监控摘要回写、中断标记、清空与监听 |
 | `utils/notifications.ts` | 固定通知 ID、按钮动作、发送/任务通知策略 |
 | `utils/taskMonitor.ts` | 任务监控 session、1 分钟 alarm、状态比对、合并通知 |
+| `utils/taskSort.ts` | popup 任务列表排序纯函数：字段/方向偏好、菜单点击转移、存储读回归一化、标签、稳定排序 |
 | `utils/popupFit.ts` | 弹窗被浏览器限高时把 `#app` 钉到视口高度，让列表压缩到可见空间内滚动（仅在文档真实溢出时写入样式） |
 | `entrypoints/options/` | 控制面板：设置、番号匹配、测试连接、目录树、发送记录、引导 |
 | `entrypoints/options/components/` | `AvMatchPanel.vue` 配置表单、`AvMatchPreview.vue` 只读规则预览 |
 | `entrypoints/popup/` | 工具栏弹窗：`a-tabs` 双页外壳（下载任务 / 发送链接）、打开设置与迅雷 |
-| `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除；`SendPanel.vue` 链接解析去重与发送结果动作 |
+| `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除、进行中任务排序（`utils/taskSort.ts`，偏好存 `nas_xunlei_task_sort`）；`SendPanel.vue` 链接解析去重与发送结果动作 |
 | `scripts/deploy.mjs` | 本地构建与调试浏览器部署 |
 | `docs/DEVELOPMENT.md` | 面向开发者：工作原理、结构、构建命令、调试部署、开发排障、手动测试清单 |
 | `wxt.config.ts` | manifest：权限（含 `alarms`）、host 权限、options 页、图标、版本 |
@@ -154,6 +155,7 @@
 - `nas_xunlei_settings`：设置（含 `avMatch` 嵌套配置），`storage.local`
 - `nas_xunlei_history`：发送记录，`storage.local`，上限 50；状态含 `paused`，可带 `match` 摘要（仅计数/最多 3 个番号或任务名，不存完整文件列表）
 - `nas_xunlei_monitor`：活跃监控 session，`storage.local`，上限 5 个 session、每个最多 200 个任务
+- `nas_xunlei_task_sort`：popup 任务列表排序偏好 `{field, dir}`，`storage.local`，读写失败均静默退化为默认排序；不进 `nas_xunlei_settings`（弹窗 UI 偏好，非功能配置）
 - `nas_xunlei_last_send`：最近发送的链接，`storage.session`，30 分钟过期，用于通知重试
 - `nas_xunlei_notification_actions`：通知按钮动作，`storage.session`
 - `nas_xunlei_pan_auth`：接口模式的 `uiauth` JWT 缓存（含签发地址与 exp），`storage.session`，不落 local/sync

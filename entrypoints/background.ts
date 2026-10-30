@@ -353,6 +353,13 @@ function toNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/** created_time 是带时区偏移的 ISO 8601 串（如 2026-10-30T08:17:53.486+08:00），Date.parse 可直接解析 */
+function toTimestamp(value: unknown): number {
+  if (typeof value !== 'string' || !value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function toTaskSummary(task: XunleiTask): TaskSummary {
   return {
     id: task.id,
@@ -365,6 +372,7 @@ function toTaskSummary(task: XunleiTask): TaskSummary {
     checkedSize: toNumber(task.params?.checked_size),
     realPath: task.params?.real_path ?? '',
     message: task.message ?? '',
+    createdAt: toTimestamp(task.created_time),
   };
 }
 

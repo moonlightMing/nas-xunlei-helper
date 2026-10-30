@@ -1,8 +1,18 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { message } from 'ant-design-vue';
 import type { ListTasksResponse, TaskActionResponse, TaskSummary } from '@/utils/messaging';
 import { schedulePopupFit } from '@/utils/popupFit';
+import {
+  DEFAULT_TASK_SORT,
+  nextTaskSortPreference,
+  normalizeTaskSortPreference,
+  sortTasks,
+  taskSortLabel,
+  taskSortMenuLabel,
+  type TaskSortField,
+  type TaskSortPreference,
+} from '@/utils/taskSort';
 import { getSendErrorMeta, type SendErrorCode } from '@/utils/sendErrors';
 import type { XunleiPhase } from '@/utils/xunleiApi';
 
@@ -27,8 +37,17 @@ const scopeOptions = [
   { label: '已完成', value: 'done' },
 ];
 
+/** 任务列表排序偏好的独立存储键，不进 nas_xunlei_settings（属弹窗 UI 偏好，非功能配置） */
+const SORT_STORAGE_KEY = 'nas_xunlei_task_sort';
+const SORT_FIELDS: TaskSortField[] = ['default', 'created', 'progress', 'speed', 'size', 'name'];
+
 const scope = ref<'ing' | 'done'>('ing');
 const tasks = ref<TaskSummary[]>([]);
+const sortPref = ref<TaskSortPreference>({ ...DEFAULT_TASK_SORT });
+const displayTasks = computed(() =>
+  scope.value === 'ing' ? sortTasks(tasks.value, sortPref.value) : tasks.value,
+);
+const sortButtonLabel = computed(() => taskSortLabel(sortPref.value.field, sortPref.value.dir));
 const loading = ref(false);
 const errorText = ref('');
 const errorCode = ref<string>('');
@@ -145,7 +164,27 @@ const handleOpenXunlei = async () => {
 
 const errorMeta = () => (errorCode.value ? getSendErrorMeta(errorCode.value as SendErrorCode) : null);
 
-onMounted(() => void load());
+const restoreSortPref = async () => {
+  try {
+    const stored = await chrome.storage.local.get(SORT_STORAGE_KEY);
+    sortPref.value = normalizeTaskSortPreference(stored?.[SORT_STORAGE_KEY]);
+  } catch {
+    // 读不到偏好就用默认排序，不阻塞列表加载
+  }
+};
+
+const handleSortMenuClick = ({ key }: { key: string | number }) => {
+  const next = nextTaskSortPreference(sortPref.value, key as TaskSortField);
+  sortPref.value = next;
+  void chrome.storage.local
+    .set({ [SORT_STORAGE_KEY]: next })
+    .catch(() => undefined); // 写失败退化为仅本次弹窗内生效
+};
+
+onMounted(() => {
+  void restoreSortPref();
+  void load();
+});
 onBeforeUnmount(() => {
   unmounted = true;
   if (timer) clearTimeout(timer);
@@ -161,7 +200,21 @@ onBeforeUnmount(() => {
         size="small"
         @change="void load()"
       />
-      <a-button size="small" :loading="loading" @click="void load()">刷新</a-button>
+      <span class="toolbar-actions">
+        <a-dropdown v-if="scope === 'ing'" :trigger="['click']" placement="bottomRight">
+          <a-button size="small" title="排序方式，再次点击当前项可切换升 / 降序">
+            {{ sortButtonLabel }}
+          </a-button>
+          <template #overlay>
+            <a-menu :selected-keys="[sortPref.field]" @click="handleSortMenuClick">
+              <a-menu-item v-for="field in SORT_FIELDS" :key="field">
+                {{ taskSortMenuLabel(field, sortPref) }}
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
+        <a-button size="small" :loading="loading" @click="void load()">刷新</a-button>
+      </span>
     </div>
 
     <a-alert v-if="errorText" type="warning" show-icon class="error">
@@ -178,7 +231,7 @@ onBeforeUnmount(() => {
       </p>
       <ul v-else class="list">
         <li
-          v-for="task in tasks"
+          v-for="task in displayTasks"
           :key="task.id"
           class="item"
           :class="{ 'is-complete': task.phase === 'PHASE_TYPE_COMPLETE' }"
@@ -280,6 +333,13 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
 }
 
 .error {
