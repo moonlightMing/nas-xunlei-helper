@@ -1,20 +1,39 @@
 import type { TaskSummary } from './messaging';
 
 /**
- * popup「下载任务」列表的排序字段。`default` 保持服务端返回顺序
- * （接口按创建时间倒序下发，即最新任务在前），其余在 popup 本地排序。
+ * popup「下载任务」列表的排序字段。列表数据来自接口的原序下发
+ * （创建时间倒序），排序在 popup 本地完成；不设「默认顺序」项，
+ * 初始偏好即创建时间降序，与不排序时的服务端顺序一致。
  */
-export type TaskSortField = 'default' | 'created' | 'progress' | 'speed' | 'size' | 'name';
+export type TaskSortField = 'created' | 'progress' | 'speed' | 'size' | 'name';
 
 export type TaskSortDir = 'asc' | 'desc';
+
+/** 任务页签：进行中 / 已完成 */
+export type TaskScope = 'ing' | 'done';
 
 export interface TaskSortPreference {
   field: TaskSortField;
   dir: TaskSortDir;
 }
 
-/** 切换到新字段时的自然方向：名称、创建时间旧值在前/后按直觉——名称正序，其余越大/越新越靠前 */
-export const TASK_SORT_NATURAL_DIR: Record<Exclude<TaskSortField, 'default'>, TaskSortDir> = {
+/**
+ * 两个页签各自记忆排序偏好。已完成任务进度恒 100%、速度恒 0，
+ * 菜单收敛为创建时间/大小/名称。
+ */
+export interface TaskSortPreferenceMap {
+  ing: TaskSortPreference;
+  done: TaskSortPreference;
+}
+
+/** 各页签可用的排序字段（菜单顺序即展示顺序） */
+export const TASK_SORT_FIELDS_BY_SCOPE: Record<TaskScope, TaskSortField[]> = {
+  ing: ['created', 'progress', 'speed', 'size', 'name'],
+  done: ['created', 'size', 'name'],
+};
+
+/** 切换到新字段时的自然方向：名称按字典序正序，其余越大/越新越靠前 */
+export const TASK_SORT_NATURAL_DIR: Record<TaskSortField, TaskSortDir> = {
   created: 'desc',
   progress: 'desc',
   speed: 'desc',
@@ -22,10 +41,14 @@ export const TASK_SORT_NATURAL_DIR: Record<Exclude<TaskSortField, 'default'>, Ta
   name: 'asc',
 };
 
-export const DEFAULT_TASK_SORT: TaskSortPreference = { field: 'default', dir: 'desc' };
+export const DEFAULT_TASK_SORT: TaskSortPreference = { field: 'created', dir: 'desc' };
+
+export const DEFAULT_TASK_SORT_MAP: TaskSortPreferenceMap = {
+  ing: { ...DEFAULT_TASK_SORT },
+  done: { ...DEFAULT_TASK_SORT },
+};
 
 const FIELD_LABELS: Record<TaskSortField, string> = {
-  default: '默认顺序',
   created: '创建时间',
   progress: '进度',
   speed: '速度',
@@ -33,9 +56,8 @@ const FIELD_LABELS: Record<TaskSortField, string> = {
   name: '名称',
 };
 
-/** 排序按钮上的短标签；`default` 无方向 */
+/** 排序按钮上的短标签 */
 export function taskSortLabel(field: TaskSortField, dir: TaskSortDir): string {
-  if (field === 'default') return FIELD_LABELS[field];
   return `${FIELD_LABELS[field]} ${dir === 'asc' ? '↑' : '↓'}`;
 }
 
@@ -44,7 +66,6 @@ export function taskSortLabel(field: TaskSortField, dir: TaskSortDir): string {
  * 当前选中的字段展示实际生效的方向。
  */
 export function taskSortMenuLabel(field: TaskSortField, current: TaskSortPreference): string {
-  if (field === 'default') return FIELD_LABELS[field];
   const dir = current.field === field ? current.dir : TASK_SORT_NATURAL_DIR[field];
   return taskSortLabel(field, dir);
 }
@@ -54,31 +75,63 @@ export function nextTaskSortPreference(
   current: TaskSortPreference,
   field: TaskSortField,
 ): TaskSortPreference {
-  if (field === 'default') return { ...DEFAULT_TASK_SORT };
   if (current.field === field) {
     return { field, dir: current.dir === 'asc' ? 'desc' : 'asc' };
   }
   return { field, dir: TASK_SORT_NATURAL_DIR[field] };
 }
 
-/** `storage.local` 读回值校验：字段非法一律回落默认，不让坏数据卡住列表 */
+/** 在按页签的偏好表上更新指定页签，返回新表不改入参 */
+export function nextTaskSortPreferenceMap(
+  map: TaskSortPreferenceMap,
+  scope: TaskScope,
+  field: TaskSortField,
+): TaskSortPreferenceMap {
+  return { ...map, [scope]: nextTaskSortPreference(map[scope], field) };
+}
+
+/**
+ * `storage.local` 读回值校验：字段非法（含旧版的 default）一律回落
+ * 创建时间降序，不让坏数据卡住列表；created 降序恰与旧「默认顺序」
+ * 的服务端原序渲染一致，旧偏好无感迁移。兼容两种存储格式——
+ * 旧单页签 `{field, dir}`（视为进行中的偏好）与新双页签 `{ing, done}`。
+ */
 export function normalizeTaskSortPreference(input: unknown): TaskSortPreference {
   if (!input || typeof input !== 'object') return { ...DEFAULT_TASK_SORT };
   const field = (input as { field?: unknown }).field;
   const dir = (input as { dir?: unknown }).dir;
-  if (field !== 'default' && field !== 'created' && field !== 'progress' && field !== 'speed' && field !== 'size' && field !== 'name') {
+  if (field !== 'created' && field !== 'progress' && field !== 'speed' && field !== 'size' && field !== 'name') {
     return { ...DEFAULT_TASK_SORT };
   }
   return { field, dir: dir === 'asc' ? 'asc' : 'desc' };
 }
 
+export function normalizeTaskSortPreferenceMap(input: unknown): TaskSortPreferenceMap {
+  if (!input || typeof input !== 'object') return cloneTaskSortMap(DEFAULT_TASK_SORT_MAP);
+  const rec = input as Record<string, unknown>;
+  if (rec.ing !== undefined || rec.done !== undefined) {
+    return {
+      ing: normalizeTaskSortPreference(rec.ing),
+      done: normalizeTaskSortPreference(rec.done),
+    };
+  }
+  return {
+    ing: normalizeTaskSortPreference(input),
+    done: { ...DEFAULT_TASK_SORT_MAP.done },
+  };
+}
+
+function cloneTaskSortMap(map: TaskSortPreferenceMap): TaskSortPreferenceMap {
+  return { ing: { ...map.ing }, done: { ...map.done } };
+}
+
 /**
- * 按偏好排序，返回新数组不改入参。`default` 保持服务端顺序；
- * 数值同值时保持原相对次序（ES2019 起 sort 稳定），保证轮询刷新下列表不跳动。
+ * 按偏好排序，返回新数组不改入参。数值同值时保持原相对次序
+ * （ES2019 起 sort 稳定），保证轮询刷新下列表不跳动。
  */
 export function sortTasks(tasks: TaskSummary[], pref: TaskSortPreference): TaskSummary[] {
   const sorted = [...tasks];
-  if (pref.field === 'default' || sorted.length < 2) return sorted;
+  if (sorted.length < 2) return sorted;
   const sign = pref.dir === 'asc' ? 1 : -1;
   switch (pref.field) {
     case 'created':

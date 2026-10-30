@@ -4,14 +4,16 @@ import { message } from 'ant-design-vue';
 import type { ListTasksResponse, TaskActionResponse, TaskSummary } from '@/utils/messaging';
 import { schedulePopupFit } from '@/utils/popupFit';
 import {
-  DEFAULT_TASK_SORT,
-  nextTaskSortPreference,
-  normalizeTaskSortPreference,
+  DEFAULT_TASK_SORT_MAP,
+  normalizeTaskSortPreferenceMap,
+  nextTaskSortPreferenceMap,
   sortTasks,
+  TASK_SORT_FIELDS_BY_SCOPE,
   taskSortLabel,
   taskSortMenuLabel,
   type TaskSortField,
-  type TaskSortPreference,
+  type TaskSortPreferenceMap,
+  type TaskScope,
 } from '@/utils/taskSort';
 import { getSendErrorMeta, type SendErrorCode } from '@/utils/sendErrors';
 import type { XunleiPhase } from '@/utils/xunleiApi';
@@ -39,15 +41,18 @@ const scopeOptions = [
 
 /** 任务列表排序偏好的独立存储键，不进 nas_xunlei_settings（属弹窗 UI 偏好，非功能配置） */
 const SORT_STORAGE_KEY = 'nas_xunlei_task_sort';
-const SORT_FIELDS: TaskSortField[] = ['default', 'created', 'progress', 'speed', 'size', 'name'];
+// 两个页签各自记忆偏好；服务端原序即创建时间倒序，不设「默认顺序」项
 
 const scope = ref<'ing' | 'done'>('ing');
 const tasks = ref<TaskSummary[]>([]);
-const sortPref = ref<TaskSortPreference>({ ...DEFAULT_TASK_SORT });
-const displayTasks = computed(() =>
-  scope.value === 'ing' ? sortTasks(tasks.value, sortPref.value) : tasks.value,
-);
-const sortButtonLabel = computed(() => taskSortLabel(sortPref.value.field, sortPref.value.dir));
+const sortMap = ref<TaskSortPreferenceMap>({
+  ing: { ...DEFAULT_TASK_SORT_MAP.ing },
+  done: { ...DEFAULT_TASK_SORT_MAP.done },
+});
+const scopeSort = computed(() => sortMap.value[scope.value as TaskScope]);
+const displayTasks = computed(() => sortTasks(tasks.value, scopeSort.value));
+const sortButtonLabel = computed(() => taskSortLabel(scopeSort.value.field, scopeSort.value.dir));
+const sortFields = computed(() => TASK_SORT_FIELDS_BY_SCOPE[scope.value as TaskScope]);
 const loading = ref(false);
 const errorText = ref('');
 const errorCode = ref<string>('');
@@ -167,17 +172,16 @@ const errorMeta = () => (errorCode.value ? getSendErrorMeta(errorCode.value as S
 const restoreSortPref = async () => {
   try {
     const stored = await chrome.storage.local.get(SORT_STORAGE_KEY);
-    sortPref.value = normalizeTaskSortPreference(stored?.[SORT_STORAGE_KEY]);
+    sortMap.value = normalizeTaskSortPreferenceMap(stored?.[SORT_STORAGE_KEY]);
   } catch {
     // 读不到偏好就用默认排序，不阻塞列表加载
   }
 };
 
 const handleSortMenuClick = ({ key }: { key: string | number }) => {
-  const next = nextTaskSortPreference(sortPref.value, key as TaskSortField);
-  sortPref.value = next;
+  sortMap.value = nextTaskSortPreferenceMap(sortMap.value, scope.value as TaskScope, key as TaskSortField);
   void chrome.storage.local
-    .set({ [SORT_STORAGE_KEY]: next })
+    .set({ [SORT_STORAGE_KEY]: sortMap.value })
     .catch(() => undefined); // 写失败退化为仅本次弹窗内生效
 };
 
@@ -201,14 +205,14 @@ onBeforeUnmount(() => {
         @change="void load()"
       />
       <span class="toolbar-actions">
-        <a-dropdown v-if="scope === 'ing'" :trigger="['click']" placement="bottomRight">
+        <a-dropdown :trigger="['click']" placement="bottomRight">
           <a-button size="small" title="排序方式，再次点击当前项可切换升 / 降序">
             {{ sortButtonLabel }}
           </a-button>
           <template #overlay>
-            <a-menu :selected-keys="[sortPref.field]" @click="handleSortMenuClick">
-              <a-menu-item v-for="field in SORT_FIELDS" :key="field">
-                {{ taskSortMenuLabel(field, sortPref) }}
+            <a-menu :selected-keys="[scopeSort.field]" @click="handleSortMenuClick">
+              <a-menu-item v-for="field in sortFields" :key="field">
+                {{ taskSortMenuLabel(field, scopeSort) }}
               </a-menu-item>
             </a-menu>
           </template>

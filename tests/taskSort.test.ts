@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 import type { TaskSummary } from '@/utils/messaging';
 import {
   DEFAULT_TASK_SORT,
+  DEFAULT_TASK_SORT_MAP,
   nextTaskSortPreference,
+  nextTaskSortPreferenceMap,
   normalizeTaskSortPreference,
+  normalizeTaskSortPreferenceMap,
   sortTasks,
+  TASK_SORT_FIELDS_BY_SCOPE,
   taskSortLabel,
   taskSortMenuLabel,
 } from '@/utils/taskSort';
@@ -28,15 +32,15 @@ function task(partial: Partial<TaskSummary>): TaskSummary {
 
 describe('sortTasks', () => {
   const serverOrder = [
-    task({ id: 'a', name: 'aaa', progress: 10, speed: 100, totalSize: 300 }),
-    task({ id: 'b', name: 'bbb', progress: 90, speed: 300, totalSize: 100 }),
-    task({ id: 'c', name: 'ccc', progress: 50, speed: 200, totalSize: 200 }),
+    task({ id: 'a', name: 'aaa', progress: 10, speed: 100, totalSize: 300, createdAt: 3000 }),
+    task({ id: 'b', name: 'bbb', progress: 90, speed: 300, totalSize: 100, createdAt: 1000 }),
+    task({ id: 'c', name: 'ccc', progress: 50, speed: 200, totalSize: 200, createdAt: 2000 }),
   ];
 
-  it('default 保持服务端顺序且不改入参', () => {
+  it('默认偏好（创建时间降序）保持服务端顺序且不改入参', () => {
     const input = [...serverOrder];
     const result = sortTasks(input, DEFAULT_TASK_SORT);
-    expect(result.map((t) => t.id)).toEqual(['a', 'b', 'c']);
+    expect(result.map((t) => t.id)).toEqual(['a', 'c', 'b']);
     expect(result).not.toBe(input);
     expect(input.map((t) => t.id)).toEqual(['a', 'b', 'c']);
   });
@@ -111,10 +115,6 @@ describe('sortTasks', () => {
 
 describe('nextTaskSortPreference', () => {
   it('点击新字段落到自然方向', () => {
-    expect(nextTaskSortPreference(DEFAULT_TASK_SORT, 'created')).toEqual({
-      field: 'created',
-      dir: 'desc',
-    });
     expect(nextTaskSortPreference(DEFAULT_TASK_SORT, 'progress')).toEqual({
       field: 'progress',
       dir: 'desc',
@@ -123,6 +123,10 @@ describe('nextTaskSortPreference', () => {
   });
 
   it('点击当前字段翻转方向', () => {
+    expect(nextTaskSortPreference(DEFAULT_TASK_SORT, 'created')).toEqual({
+      field: 'created',
+      dir: 'asc',
+    });
     expect(nextTaskSortPreference({ field: 'speed', dir: 'desc' }, 'speed')).toEqual({
       field: 'speed',
       dir: 'asc',
@@ -132,16 +136,9 @@ describe('nextTaskSortPreference', () => {
       dir: 'desc',
     });
   });
-
-  it('切回默认顺序不保留方向', () => {
-    expect(nextTaskSortPreference({ field: 'speed', dir: 'asc' }, 'default')).toEqual(
-      DEFAULT_TASK_SORT,
-    );
-  });
 });
 
-describe('normalizeTaskSortPreference', () => {
-  it('合法值原样保留', () => {
+describe('normalizeTaskSortPreference', () => {  it('合法值原样保留', () => {
     expect(normalizeTaskSortPreference({ field: 'size', dir: 'asc' })).toEqual({
       field: 'size',
       dir: 'asc',
@@ -152,8 +149,12 @@ describe('normalizeTaskSortPreference', () => {
     });
   });
 
-  it('非法输入回落默认：未知字段、方向、非对象', () => {
+  it('非法输入回落默认：未知字段、旧版 default、方向、非对象', () => {
     expect(normalizeTaskSortPreference({ field: 'evil', dir: 'desc' })).toEqual(DEFAULT_TASK_SORT);
+    // 旧版存的 {field:'default'} 无感迁移到创建时间降序（与服务端原序渲染一致）
+    expect(normalizeTaskSortPreference({ field: 'default', dir: 'desc' })).toEqual(
+      DEFAULT_TASK_SORT,
+    );
     expect(normalizeTaskSortPreference({ field: 'speed', dir: 'sideways' })).toEqual({
       field: 'speed',
       dir: 'desc',
@@ -164,9 +165,52 @@ describe('normalizeTaskSortPreference', () => {
   });
 });
 
+describe('双页签偏好', () => {
+  it('已完成页签不提供进度/速度（恒定值无排序意义），进行中提供全部五项', () => {
+    expect(TASK_SORT_FIELDS_BY_SCOPE.ing).toEqual(['created', 'progress', 'speed', 'size', 'name']);
+    expect(TASK_SORT_FIELDS_BY_SCOPE.done).toEqual(['created', 'size', 'name']);
+  });
+
+  it('nextTaskSortPreferenceMap 只更新目标页签，不改入参', () => {
+    const map = {
+      ing: { field: 'created', dir: 'desc' } as const,
+      done: { field: 'size', dir: 'desc' } as const,
+    };
+    const next = nextTaskSortPreferenceMap(map, 'done', 'size');
+    expect(next.done).toEqual({ field: 'size', dir: 'asc' });
+    expect(next.ing).toEqual(map.ing);
+    expect(next).not.toBe(map);
+    expect(map.done.dir).toBe('desc');
+  });
+
+  it('新双页签格式逐页签归一化，非法页签值回落默认', () => {
+    expect(
+      normalizeTaskSortPreferenceMap({
+        ing: { field: 'speed', dir: 'asc' },
+        done: { field: 'evil', dir: 'desc' },
+      }),
+    ).toEqual({
+      ing: { field: 'speed', dir: 'asc' },
+      done: DEFAULT_TASK_SORT_MAP.done,
+    });
+  });
+
+  it('旧单页签格式迁移：视为进行中的偏好，已完成用默认', () => {
+    expect(normalizeTaskSortPreferenceMap({ field: 'size', dir: 'asc' })).toEqual({
+      ing: { field: 'size', dir: 'asc' },
+      done: DEFAULT_TASK_SORT_MAP.done,
+    });
+    // 旧版「默认顺序」偏好迁移后与创建时间降序等价
+    expect(normalizeTaskSortPreferenceMap({ field: 'default', dir: 'desc' })).toEqual(
+      DEFAULT_TASK_SORT_MAP,
+    );
+    expect(normalizeTaskSortPreferenceMap(null)).toEqual(DEFAULT_TASK_SORT_MAP);
+    expect(normalizeTaskSortPreferenceMap('junk')).toEqual(DEFAULT_TASK_SORT_MAP);
+  });
+});
+
 describe('标签', () => {
-  it('按钮标签：默认无方向，其余带方向箭头', () => {
-    expect(taskSortLabel('default', 'desc')).toBe('默认顺序');
+  it('按钮标签带方向箭头', () => {
     expect(taskSortLabel('created', 'desc')).toBe('创建时间 ↓');
     expect(taskSortLabel('speed', 'desc')).toBe('速度 ↓');
     expect(taskSortLabel('name', 'asc')).toBe('名称 ↑');
@@ -174,9 +218,9 @@ describe('标签', () => {
 
   it('菜单标签：未选中项展示自然方向，选中项展示当前方向', () => {
     expect(taskSortMenuLabel('created', DEFAULT_TASK_SORT)).toBe('创建时间 ↓');
+    expect(taskSortMenuLabel('created', { field: 'created', dir: 'asc' })).toBe('创建时间 ↑');
     expect(taskSortMenuLabel('speed', DEFAULT_TASK_SORT)).toBe('速度 ↓');
     expect(taskSortMenuLabel('speed', { field: 'speed', dir: 'asc' })).toBe('速度 ↑');
     expect(taskSortMenuLabel('name', DEFAULT_TASK_SORT)).toBe('名称 ↑');
-    expect(taskSortMenuLabel('default', DEFAULT_TASK_SORT)).toBe('默认顺序');
   });
 });
