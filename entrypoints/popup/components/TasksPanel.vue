@@ -64,6 +64,34 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 /** 卸载后不再排下一轮轮询，避免在途请求返回时又把定时器拉起来 */
 let unmounted = false;
 
+/**
+ * 操作后服务端状态机更新有滞后（PATCH 返回 ok 后立刻回读仍可能是旧 phase），
+ * 乐观值在保护窗内不被轮询数据冲掉；服务端跟上后解除保护，窗口过期则如实显示服务端状态。
+ */
+const OPTIMISTIC_TTL_MS = 10_000;
+const optimisticPhase = new Map<string, { phase: XunleiPhase; at: number }>();
+const optimisticDeleted = new Map<string, number>();
+
+const reconcileTasks = (incoming: TaskSummary[]): TaskSummary[] => {
+  const now = Date.now();
+  for (const [id, exp] of optimisticPhase) if (now - exp.at > OPTIMISTIC_TTL_MS) optimisticPhase.delete(id);
+  for (const [id, at] of optimisticDeleted) if (now - at > OPTIMISTIC_TTL_MS) optimisticDeleted.delete(id);
+  let list = incoming;
+  if (optimisticDeleted.size) list = list.filter((t) => !optimisticDeleted.has(t.id));
+  if (optimisticPhase.size) {
+    list = list.map((t) => {
+      const exp = optimisticPhase.get(t.id);
+      if (!exp) return t;
+      if (t.phase === exp.phase) {
+        optimisticPhase.delete(t.id); // 服务端已跟上，解除保护
+        return t;
+      }
+      return { ...t, phase: exp.phase };
+    });
+  }
+  return list;
+};
+
 const bytes = (value: number): string => {
   if (!value || value < 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -83,6 +111,11 @@ const messageTone = (phase: string): string => {
   if (phase === 'PHASE_TYPE_PAUSED') return 'warn';
   return 'info';
 };
+
+/** 进行中页签所有下载中任务的速度之和（字节/秒），等待 / 暂停 / 失败任务不计入 */
+const totalSpeed = computed(() =>
+  tasks.value.reduce((sum, task) => (task.phase === 'PHASE_TYPE_RUNNING' ? sum + task.speed : sum), 0),
+);
 
 const statText = (task: TaskSummary): string => {
   const percent = `${Math.max(0, Math.min(100, Math.round(task.progress)))}%`;
@@ -123,7 +156,7 @@ const load = async (silent = false) => {
     }
     errorText.value = '';
     errorCode.value = '';
-    tasks.value = response.tasks;
+    tasks.value = reconcileTasks(response.tasks);
     if (response.expiresIn) intervalSeconds.value = response.expiresIn;
   } catch (error) {
     errorText.value = (error as Error).message || '读取下载任务失败';
@@ -152,6 +185,15 @@ const runAction = async (task: TaskSummary, action: 'operate' | 'delete', phase?
       return;
     }
     message.success(response.message ?? '已处理');
+    // 乐观更新：先按操作结果改本地状态让界面跟手；登记保护窗避免随后的刷新
+    // 用服务端滞后状态把界面冲回去（服务端状态机更新有几秒延迟）
+    if (action === 'delete') {
+      tasks.value = tasks.value.filter((t) => t.id !== task.id);
+      optimisticDeleted.set(task.id, Date.now());
+    } else if (phase) {
+      tasks.value = tasks.value.map((t) => (t.id === task.id ? { ...t, phase } : t));
+      optimisticPhase.set(task.id, { phase, at: Date.now() });
+    }
     await load(true);
   } catch (error) {
     message.error((error as Error).message || '操作失败');
@@ -198,12 +240,23 @@ onBeforeUnmount(() => {
 <template>
   <div class="tasks">
     <div class="toolbar">
-      <a-segmented
-        v-model:value="scope"
-        :options="scopeOptions"
-        size="small"
-        @change="void load(true)"
-      />
+      <span class="toolbar-left">
+        <a-segmented
+          v-model:value="scope"
+          :options="scopeOptions"
+          size="small"
+          @change="void load(true)"
+        />
+        <div v-if="scope === 'ing' && totalSpeed > 0" class="total-speed">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 4v10.5" />
+            <path d="M7.5 11l4.5 4.5 4.5-4.5" />
+            <path d="M5 19.5h14" />
+          </svg>
+          <span>总速度</span>
+          <span class="value">{{ bytes(totalSpeed) }}/s</span>
+        </div>
+      </span>
       <span class="toolbar-actions">
         <a-dropdown :trigger="['click']" placement="bottomRight">
           <a-button size="small" title="排序方式，再次点击当前项可切换升 / 降序">
@@ -251,12 +304,16 @@ onBeforeUnmount(() => {
                 v-if="task.phase === 'PHASE_TYPE_RUNNING' || task.phase === 'PHASE_TYPE_PENDING'"
                 type="button"
                 class="act"
+                :class="{ 'is-busy': pendingIds.has(task.id) }"
                 title="暂停"
                 aria-label="暂停"
                 :disabled="pendingIds.has(task.id)"
                 @click="void runAction(task, 'operate', 'PHASE_TYPE_PAUSED')"
               >
-                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                <svg v-if="pendingIds.has(task.id)" class="ico spinner" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9" />
+                </svg>
+                <svg v-else class="ico" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M9.5 5.5v13M14.5 5.5v13" />
                 </svg>
               </button>
@@ -264,12 +321,16 @@ onBeforeUnmount(() => {
                 v-else-if="task.phase === 'PHASE_TYPE_PAUSED' || task.phase === 'PHASE_TYPE_ERROR'"
                 type="button"
                 class="act"
+                :class="{ 'is-busy': pendingIds.has(task.id) }"
                 title="继续"
                 aria-label="继续"
                 :disabled="pendingIds.has(task.id)"
                 @click="void runAction(task, 'operate', 'PHASE_TYPE_RUNNING')"
               >
-                <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                <svg v-if="pendingIds.has(task.id)" class="ico spinner" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9" />
+                </svg>
+                <svg v-else class="ico" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M8.5 6v12c0 .8.9 1.3 1.6.9l9.5-6c.6-.4.6-1.3 0-1.7l-9.5-6c-.7-.5-1.6 0-1.6.8z" />
                 </svg>
               </button>
@@ -282,11 +343,15 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="act danger"
+                  :class="{ 'is-busy': pendingIds.has(task.id) }"
                   title="删除"
                   aria-label="删除"
                   :disabled="pendingIds.has(task.id)"
                 >
-                  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg v-if="pendingIds.has(task.id)" class="ico spinner" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" />
+                  </svg>
+                  <svg v-else class="ico" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4.5 6.6h15" />
                     <path d="M10 6.6V5.4c0-.8.6-1.4 1.4-1.4h1.2c.8 0 1.4.6 1.4 1.4v1.2" />
                     <path d="M6.6 6.6l.9 12c.06.9.8 1.6 1.7 1.6h5.6c.9 0 1.64-.7 1.7-1.6l.9-12" />
@@ -348,6 +413,49 @@ onBeforeUnmount(() => {
 
 /* 换页签走静默加载（load(true)），刷新按钮只在手动点击时转 spinner——
    切页签过程工具栏没有任何宽度变化，排序按钮不会被推挤 */
+
+/* 页签与总速度编成左组贴左对齐，按钮组贴右；左组可收缩，
+   总速度随之省略号截断，超高倍缩放的窄弹窗里不撑爆工具栏 */
+.toolbar-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* 数字 tabular-nums 宽度变化极小，左组内浮动不影响右侧排序按钮 */
+.total-speed {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.total-speed .ico {
+  display: block;
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.total-speed .value {
+  color: #0958d9;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .error {
   margin-bottom: 0;
@@ -561,6 +669,21 @@ onBeforeUnmount(() => {
 .act:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* 操作进行中：图标换成 3/4 圆弧旋转（r=9 周长约 56.5，42/14 取四分之三弧） */
+.act .spinner circle {
+  stroke-dasharray: 42 14;
+}
+
+.act.is-busy .ico {
+  animation: act-spin 0.7s linear infinite;
+}
+
+@keyframes act-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .act.danger:hover:not(:disabled) {

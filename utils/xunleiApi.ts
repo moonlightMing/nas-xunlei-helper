@@ -517,18 +517,31 @@ export function createTask(
   });
 }
 
-/** 暂停 / 继续：phase 传 PHASE_TYPE_PAUSED 或 PHASE_TYPE_RUNNING */
+/**
+ * 任务操作（PATCH drive/v1/task）spec 里 phase 的合法值是套件前端的短形式：
+ * pause（暂停）/ running（继续）/ delete（连同本地文件删除，刻意不提供）。
+ * 传 PHASE_TYPE_* 完整枚举值服务端不识别，返回 2xx 但静默忽略（2026-10-31 线上实况：
+ * 点「继续」状态无变化），与多份逆向实现（对齐前端 operateTask）核对一致。
+ */
+const OPERATE_SPEC_PHASE: Partial<Record<XunleiPhase, string>> = {
+  PHASE_TYPE_PAUSED: 'pause',
+  PHASE_TYPE_RUNNING: 'running',
+};
+
+/** 暂停 / 继续：phase 传 PHASE_TYPE_PAUSED 或 PHASE_TYPE_RUNNING，spec 内映射为短形式 */
 export function operateTask(
   xunleiUrl: string,
   params: { space: string; id: string; type: string; phase: XunleiPhase },
 ): Promise<Record<string, unknown>> {
+  const specPhase = OPERATE_SPEC_PHASE[params.phase];
+  if (!specPhase) throw new XunleiApiError('api-error', `不支持的任务操作状态：${params.phase}`);
   return xunleiRequest(xunleiUrl, 'drive/v1/task', {
     method: 'PATCH',
     body: {
       space: params.space,
       type: params.type,
       id: params.id,
-      set_params: { spec: JSON.stringify({ phase: params.phase }) },
+      set_params: { spec: JSON.stringify({ phase: specPhase }) },
     },
   });
 }

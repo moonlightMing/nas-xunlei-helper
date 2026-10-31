@@ -4,6 +4,7 @@ import {
   flattenResourceFiles,
   invalidatePanAuth,
   listTasks,
+  operateTask,
   toApiBase,
   XunleiApiError,
   type ResourceNode,
@@ -120,5 +121,62 @@ describe('xunleiRequest 请求格式（fetch 拦截断言）', () => {
     expect(api?.init.method).toBe('POST');
     expect(api?.url).toContain('task_ids=t1');
     expect(api?.url).toContain('task_ids=t2');
+  });
+
+  it('operateTask 的 spec.phase 映射为套件前端短形式（完整枚举值会被静默忽略）', async () => {
+    const parseBody = (call?: RecordedCall) => JSON.parse(String(call?.init.body ?? '{}'));
+
+    // 继续：PHASE_TYPE_RUNNING → "running"
+    const resumeCalls = stubFetch([
+      () =>
+        new Response(`<html>function uiauth(){return "${TOKEN}"}</html>`, { status: 200 }),
+      () => new Response('{}', { status: 200 }),
+    ]);
+    await operateTask('http://nas.local:5000', {
+      space: 'dev#1',
+      id: 't1',
+      type: 'user#download-url',
+      phase: 'PHASE_TYPE_RUNNING',
+    });
+    expect(resumeCalls[1]?.url.startsWith('http://nas.local:5000/method/patch/drive/v1/task?')).toBe(true);
+    expect(resumeCalls[1]?.init.method).toBe('POST');
+    expect(parseBody(resumeCalls[1])).toEqual({
+      space: 'dev#1',
+      type: 'user#download-url',
+      id: 't1',
+      set_params: { spec: '{"phase":"running"}' },
+    });
+
+    invalidatePanAuth();
+
+    // 暂停：PHASE_TYPE_PAUSED → "pause"
+    const pauseCalls = stubFetch([
+      () =>
+        new Response(`<html>function uiauth(){return "${TOKEN}"}</html>`, { status: 200 }),
+      () => new Response('{}', { status: 200 }),
+    ]);
+    await operateTask('http://nas.local:5000', {
+      space: 'dev#1',
+      id: 't1',
+      type: 'user#download-url',
+      phase: 'PHASE_TYPE_PAUSED',
+    });
+    expect(parseBody(pauseCalls[1])).toEqual(
+      expect.objectContaining({
+        set_params: { spec: '{"phase":"pause"}' },
+      }),
+    );
+
+    invalidatePanAuth();
+
+    // 其它 phase 值不属于暂停/继续操作，同步抛错而不是发请求
+    expect(() =>
+      operateTask('http://nas.local:5000', {
+        space: 'dev#1',
+        id: 't1',
+        type: 'user#download-url',
+        phase: 'PHASE_TYPE_COMPLETE',
+      }),
+    ).toThrow(/不支持的任务操作状态/);
   });
 });
