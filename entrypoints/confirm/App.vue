@@ -4,6 +4,7 @@ import { message as antMessage } from 'ant-design-vue';
 import { classifyFileCategory, formatFileSize, getExtension } from '@/utils/avMatch';
 import {
   buildConfirmTree,
+  collectTreeNodeFileIds,
   getPendingConfirmation,
   PENDING_TTL_MS,
   type ConfirmFile,
@@ -28,6 +29,10 @@ interface FlatRow {
   name: string;
   size: number;
   file?: ConfirmFile;
+  /** 目录行：子树内全部文件 id 与三态勾选状态 */
+  fileIds?: string[];
+  checked?: boolean;
+  indeterminate?: boolean;
   expanded: boolean;
 }
 
@@ -182,6 +187,8 @@ function rowsFor(index: number, task: ConfirmTask): FlatRow[] {
     nodes.flatMap((node) => {
       if (node.isDir) {
         const expanded = !state.collapsed.includes(node.key);
+        const fileIds = collectTreeNodeFileIds(node);
+        const picked = fileIds.filter((id) => state.selected.has(id)).length;
         return [
           {
             key: node.key,
@@ -189,6 +196,9 @@ function rowsFor(index: number, task: ConfirmTask): FlatRow[] {
             isDir: true,
             name: node.name,
             size: node.size,
+            fileIds,
+            checked: fileIds.length > 0 && picked === fileIds.length,
+            indeterminate: picked > 0 && picked < fileIds.length,
             expanded,
           },
           ...(expanded ? walk(node.children, depth + 1) : []),
@@ -237,6 +247,20 @@ function toggleAll(index: number, task: ConfirmTask): void {
   const state = stateOf(index);
   const all = task.files.length > 0 && task.files.every((file) => state.selected.has(file.id));
   state.selected = all ? new Set() : new Set(task.files.map((file) => file.id));
+}
+
+/** 文件夹级勾选：对子树内全部文件（含折叠未展示的）整体勾选/取消 */
+function toggleFolderSelection(index: number, row: FlatRow): void {
+  const ids = row.fileIds ?? [];
+  if (!ids.length) return;
+  const state = stateOf(index);
+  const all = ids.every((id) => state.selected.has(id));
+  const next = new Set(state.selected);
+  for (const id of ids) {
+    if (all) next.delete(id);
+    else next.add(id);
+  }
+  state.selected = next;
 }
 
 function resetDefault(index: number, task: ConfirmTask): void {
@@ -568,7 +592,14 @@ function closeWindow(): void {
                       @click.stop
                       @change="onFileChange(index, row.file.id, $event)"
                     />
-                    <span v-else class="row-check" />
+                    <a-checkbox
+                      v-else
+                      class="row-check"
+                      :checked="row.checked"
+                      :indeterminate="row.indeterminate"
+                      @click.stop
+                      @change="toggleFolderSelection(index, row)"
+                    />
                     <span
                       v-if="row.file"
                       class="file-dot"

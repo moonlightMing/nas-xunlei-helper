@@ -244,6 +244,12 @@ export function buildConfirmTree(files: ConfirmFile[]): ConfirmTreeNode[] {
   return roots;
 }
 
+/** 收集一个节点（目录或文件）下所有后代文件的 id，供文件夹级勾选使用 */
+export function collectTreeNodeFileIds(node: ConfirmTreeNode): string[] {
+  if (!node.isDir) return node.file ? [node.file.id] : [];
+  return node.children.flatMap(collectTreeNodeFileIds);
+}
+
 /**
  * 把确认窗口回传的勾选映射成建任务参数。
  * - 未包含 / BT 空选择 → 跳过，不退化成整包

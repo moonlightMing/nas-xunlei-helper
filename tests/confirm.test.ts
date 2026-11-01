@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildConfirmCreateSpecs,
   buildConfirmTree,
+  collectTreeNodeFileIds,
   type ConfirmFile,
   type PendingConfirmation,
 } from '@/utils/confirm';
@@ -64,6 +65,24 @@ describe('buildConfirmTree', () => {
     expect(sub?.size).toBe(20);
     expect(sub?.children[0]?.file?.id).toBe('b');
     expect(tree.find((node) => !node.isDir)?.file?.id).toBe('c');
+  });
+});
+
+describe('collectTreeNodeFileIds', () => {
+  it('收集目录下全部后代文件 id（含嵌套子目录），文件节点只返回自身', () => {
+    const tree = buildConfirmTree([
+      file('a', 'dir1/a.mp4', 0, 10),
+      file('b', 'dir1/sub/b.mp4', 1, 20),
+      file('c', 'dir1/sub/c.mp4', 2, 30),
+      file('d', 'd.mp4', 3, 5),
+    ]);
+    const dir1 = tree.find((node) => node.isDir);
+    expect(dir1).toBeTruthy();
+    expect(collectTreeNodeFileIds(dir1!).sort()).toEqual(['a', 'b', 'c']);
+    const sub = dir1!.children.find((node) => node.isDir);
+    expect(collectTreeNodeFileIds(sub!)).toEqual(['b', 'c']);
+    const rootFile = tree.find((node) => !node.isDir);
+    expect(collectTreeNodeFileIds(rootFile!)).toEqual(['d']);
   });
 });
 

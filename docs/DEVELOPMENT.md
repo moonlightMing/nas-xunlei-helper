@@ -32,7 +32,7 @@
 
 - `links.test.ts`：`extractResourceKey` 的六种链接归一（磁力冒号/等号写法、大小写、thunder 外壳、ed2k、http）——重复资源防呆的生命线；链接提取去重。
 - `avMatch.test.ts`：`encodeSubFileIndex` 连续段折叠与负数剔除；番号提取边界（FC2 数字右边界、`file01` 等通用序号名、加勒比日期边界匹配）；`buildMatchPlan` 的根名兜底/不继承广告/截断跳过/`excludeKeywords` 反向放大（已知行为防回归记录）；`selectSubFiles` 空编码不退化整包。
-- `confirm.test.ts`：确认窗口文件树还原、勾选→`sub_file_index` 编码、整包/空选择/截断分支。
+- `confirm.test.ts`：确认窗口文件树还原、文件夹后代文件收集、勾选→`sub_file_index` 编码、整包/空选择/截断分支。
 - `xunleiApi.test.ts`：`flattenResourceFiles` 根名不拼进 path、序号回退推导；拦截 `fetch` 断言 `pan-auth` 头与 `pan_auth` 查询参数双通道、`method/delete/` 隧道。
 - `settings.test.ts`：设置缺省回落方向、读取失败不缓存默认值。
 
