@@ -74,6 +74,8 @@ import {
   resolveFolderIdByPath,
   PHASE_DONE,
   PHASE_IN_PROGRESS,
+  PHASE_PAUSABLE,
+  PHASE_RESUMABLE,
   TASK_TYPE_LOCAL,
   TASK_TYPE_URL,
   XunleiApiError,
@@ -327,6 +329,8 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
         return listTasksViaApi(message.data?.tab ?? 'ing', message.data?.limit);
       case 'operate':
         return operateTaskViaApi(message.data.id, message.data.phase);
+      case 'operate-all':
+        return operateAllTasksViaApi(message.data.phase);
       case 'delete':
         return deleteTasksViaApi(message.data.ids);
       default:
@@ -441,6 +445,66 @@ async function operateTaskViaApi(id: string, phase: XunleiPhase): Promise<TaskAc
       phase,
     });
     return { ok: true, message: phase === 'PHASE_TYPE_PAUSED' ? '已暂停' : '已继续' };
+  } catch (error) {
+    return { ok: false, ...apiErrorMeta(error) };
+  }
+}
+
+/** 批量操作一次拉取的分批并发大小，避免几十个 PATCH 同时打到套件 */
+const BULK_OPERATE_BATCH = 5;
+const BULK_OPERATE_LIMIT = 100;
+
+/** 全部暂停/继续：一次回读进行中任务拿 type，逐个走单任务契约（短形式 pause/running） */
+async function operateAllTasksViaApi(phase: XunleiPhase): Promise<TaskActionResponse> {
+  const pausing = phase === 'PHASE_TYPE_PAUSED';
+  if (!pausing && phase !== 'PHASE_TYPE_RUNNING') {
+    return { ok: false, code: 'unknown', message: `不支持的任务操作状态：${phase}` };
+  }
+  const prepared = await prepareApiCall();
+  if ('error' in prepared) return { ok: false, ...prepared.error };
+  const targetPhases = pausing ? PHASE_PAUSABLE : PHASE_RESUMABLE;
+  try {
+    const result = await listTasks(prepared.url, {
+      space: prepared.space,
+      phases: PHASE_IN_PROGRESS,
+      types: [TASK_TYPE_URL, TASK_TYPE_LOCAL],
+      limit: BULK_OPERATE_LIMIT,
+    });
+    const targets = (result.tasks ?? []).filter((task) => targetPhases.includes(task.phase));
+    if (!targets.length) {
+      return { ok: true, message: pausing ? '没有可暂停的任务' : '没有可继续的任务' };
+    }
+    const succeededIds: string[] = [];
+    let firstError: unknown = null;
+    for (let index = 0; index < targets.length; index += BULK_OPERATE_BATCH) {
+      const batch = targets.slice(index, index + BULK_OPERATE_BATCH);
+      const settled = await Promise.allSettled(
+        batch.map((task) =>
+          operateTask(prepared.url, {
+            space: prepared.space,
+            id: task.id,
+            type: task.type,
+            phase,
+          }),
+        ),
+      );
+      settled.forEach((outcome, offset) => {
+        const task = batch[offset];
+        if (!task) return;
+        if (outcome.status === 'fulfilled') {
+          succeededIds.push(task.id);
+        } else if (!firstError) {
+          firstError = outcome.reason;
+        }
+      });
+    }
+    if (!succeededIds.length) {
+      return { ok: false, ...apiErrorMeta(firstError) };
+    }
+    const verb = pausing ? '暂停' : '继续';
+    const failed = targets.length - succeededIds.length;
+    const message = failed > 0 ? `已${verb} ${succeededIds.length} 个任务，${failed} 个失败` : `已${verb} ${succeededIds.length} 个任务`;
+    return { ok: true, message, succeededIds };
   } catch (error) {
     return { ok: false, ...apiErrorMeta(error) };
   }

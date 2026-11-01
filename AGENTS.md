@@ -124,7 +124,7 @@
 | `entrypoints/options/` | 控制面板：设置、番号匹配、测试连接、目录树、发送记录、引导 |
 | `entrypoints/options/components/` | `AvMatchPanel.vue` 配置表单、`AvMatchPreview.vue` 只读规则预览 |
 | `entrypoints/popup/` | 工具栏弹窗：`a-tabs` 双页外壳（下载任务 / 发送链接）、打开设置与迅雷 |
-| `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除、两页签任务排序（`utils/taskSort.ts`，偏好存 `nas_xunlei_task_sort`）；`SendPanel.vue` 链接解析去重与发送结果动作 |
+| `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除、批量全部开始/全部暂停（`operate-all`，总速度上抛 App 页签行显示）、两页签任务排序（`utils/taskSort.ts`，偏好存 `nas_xunlei_task_sort`）；`SendPanel.vue` 链接解析去重与发送结果动作 |
 | `scripts/deploy.mjs` | 本地构建与调试浏览器部署 |
 | `docs/DEVELOPMENT.md` | 面向开发者：工作原理、结构、构建命令、调试部署、开发排障、手动测试清单 |
 | `wxt.config.ts` | manifest：权限（含 `alarms`）、host 权限、options 页、图标、版本 |

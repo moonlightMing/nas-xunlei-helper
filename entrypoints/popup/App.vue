@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ensureSettingsLoaded, getSettings } from '@/utils/settings';
+import { bytes } from '@/utils/format';
 import { schedulePopupFit, watchPopupHeight } from '@/utils/popupFit';
 import SendPanel from './components/SendPanel.vue';
 import TasksPanel from './components/TasksPanel.vue';
@@ -8,6 +9,8 @@ import TasksPanel from './components/TasksPanel.vue';
 const settingsReady = ref(false);
 const settingsLoading = ref(true);
 const activeTab = ref('tasks');
+/** 任务面板轮询上抛的总速度（字节/秒），显示在页签行右侧；0 时不渲染 */
+const totalSpeed = ref(0);
 /** 弹窗上直接显示版本号，便于核对浏览器实际运行的构建 */
 const version = chrome.runtime.getManifest().version;
 
@@ -66,8 +69,19 @@ watch(activeTab, () => {
     </a-alert>
 
     <a-tabs v-model:activeKey="activeTab" size="small" class="tabs">
+      <template #rightExtra>
+        <div v-if="totalSpeed > 0" class="total-speed" title="进行中任务的下载速度之和">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 4v10.5" />
+            <path d="M7.5 11l4.5 4.5 4.5-4.5" />
+            <path d="M5 19.5h14" />
+          </svg>
+          <span>总速度</span>
+          <span class="value">{{ bytes(totalSpeed) }}/s</span>
+        </div>
+      </template>
       <a-tab-pane key="tasks" tab="下载任务">
-        <TasksPanel v-if="settingsReady" />
+        <TasksPanel v-if="settingsReady" @total-speed="totalSpeed = $event" />
       </a-tab-pane>
       <a-tab-pane key="send" tab="发送链接">
         <SendPanel :settings-ready="settingsReady" />
@@ -148,6 +162,38 @@ watch(activeTab, () => {
 
 .tabs :deep(.ant-tabs-nav) {
   margin-bottom: 8px;
+}
+
+/* 总速度徽标：任务面板轮询上抛，数字 tabular-nums 宽度变化极小，不推挤页签 */
+.total-speed {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.total-speed .ico {
+  display: block;
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.total-speed .value {
+  color: #0958d9;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 内容区随弹窗剩余高度拉伸，空状态提示得以在剩余空间内垂直居中。

@@ -115,6 +115,13 @@ export interface OperateTaskMessage {
   data: { id: string; phase: XunleiPhase };
 }
 
+/** 批量暂停/继续：background 拉一次任务列表后逐个下发，与单条 operate 共用 TaskActionResponse */
+export interface OperateAllTasksMessage {
+  type: 'tasks';
+  action: 'operate-all';
+  data: { phase: XunleiPhase };
+}
+
 export interface DeleteTasksMessage {
   type: 'tasks';
   action: 'delete';
@@ -125,6 +132,8 @@ export interface TaskActionResponse {
   ok: boolean;
   code?: SendErrorCode;
   message?: string;
+  /** 批量操作时实际成功（服务端已受理）的任务 id，供 popup 做乐观更新 */
+  succeededIds?: string[];
 }
 
 /** 接口模式「确认后下载」窗口提交/取消（内部页面消息） */
@@ -159,6 +168,7 @@ export type ExtensionMessage =
   | ReadDialogFilesMessage
   | ListTasksMessage
   | OperateTaskMessage
+  | OperateAllTasksMessage
   | DeleteTasksMessage
   | ConfirmSubmitMessage
   | ConfirmCancelMessage

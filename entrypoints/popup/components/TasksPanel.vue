@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { message } from 'ant-design-vue';
+import { bytes } from '@/utils/format';
 import type { ListTasksResponse, TaskActionResponse, TaskSummary } from '@/utils/messaging';
 import { schedulePopupFit } from '@/utils/popupFit';
 import {
@@ -16,7 +17,7 @@ import {
   type TaskScope,
 } from '@/utils/taskSort';
 import { getSendErrorMeta, type SendErrorCode } from '@/utils/sendErrors';
-import type { XunleiPhase } from '@/utils/xunleiApi';
+import { PHASE_PAUSABLE, PHASE_RESUMABLE, type XunleiPhase } from '@/utils/xunleiApi';
 
 const PHASE_LABELS: Record<string, string> = {
   PHASE_TYPE_PENDING: '等待中',
@@ -45,6 +46,8 @@ const SORT_STORAGE_KEY = 'nas_xunlei_task_sort';
 
 const scope = ref<'ing' | 'done'>('ing');
 const tasks = ref<TaskSummary[]>([]);
+/** 总速度上抛给 App.vue，显示在「下载任务/发送链接」页签行右侧 */
+const emit = defineEmits<{ (e: 'total-speed', value: number): void }>();
 const sortMap = ref<TaskSortPreferenceMap>({
   ing: { ...DEFAULT_TASK_SORT_MAP.ing },
   done: { ...DEFAULT_TASK_SORT_MAP.done },
@@ -92,18 +95,6 @@ const reconcileTasks = (incoming: TaskSummary[]): TaskSummary[] => {
   return list;
 };
 
-const bytes = (value: number): string => {
-  if (!value || value < 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let size = value;
-  let index = 0;
-  while (size >= 1024 && index < units.length - 1) {
-    size /= 1024;
-    index += 1;
-  }
-  return `${size >= 10 || index === 0 ? Math.round(size) : size.toFixed(1)} ${units[index]}`;
-};
-
 const statusTone = (phase: string): string => PHASE_TONES[phase] ?? 'pending';
 
 const messageTone = (phase: string): string => {
@@ -116,6 +107,8 @@ const messageTone = (phase: string): string => {
 const totalSpeed = computed(() =>
   tasks.value.reduce((sum, task) => (task.phase === 'PHASE_TYPE_RUNNING' ? sum + task.speed : sum), 0),
 );
+
+watch(totalSpeed, (value) => emit('total-speed', value), { immediate: true });
 
 const statText = (task: TaskSummary): string => {
   const percent = `${Math.max(0, Math.min(100, Math.round(task.progress)))}%`;
@@ -209,6 +202,41 @@ const handleOpenXunlei = async () => {
   window.close();
 };
 
+/** 进行中页签内可暂停 / 可继续的任务数，为 0 时批量按钮禁用（与单任务按钮同一套判断） */
+const pausableCount = computed(() => tasks.value.filter((t) => PHASE_PAUSABLE.includes(t.phase)).length);
+const resumableCount = computed(() => tasks.value.filter((t) => PHASE_RESUMABLE.includes(t.phase)).length);
+
+const bulkBusy = ref<'' | 'pause' | 'resume'>('');
+
+const runBulkAction = async (phase: 'PHASE_TYPE_PAUSED' | 'PHASE_TYPE_RUNNING') => {
+  if (bulkBusy.value) return;
+  bulkBusy.value = phase === 'PHASE_TYPE_PAUSED' ? 'pause' : 'resume';
+  try {
+    const response = (await chrome.runtime.sendMessage({
+      type: 'tasks',
+      action: 'operate-all',
+      data: { phase },
+    })) as TaskActionResponse | undefined;
+    if (!response?.ok) {
+      message.error(response?.message || '操作失败');
+      return;
+    }
+    message.success(response.message ?? '已处理');
+    // 乐观更新：只对服务端已受理的任务应用目标状态，登记保护窗避免被滞后轮询冲回
+    const succeeded = response.succeededIds ?? [];
+    if (succeeded.length) {
+      const hit = new Set(succeeded);
+      tasks.value = tasks.value.map((t) => (hit.has(t.id) ? { ...t, phase } : t));
+      for (const id of succeeded) optimisticPhase.set(id, { phase, at: Date.now() });
+    }
+    await load(true);
+  } catch (error) {
+    message.error((error as Error).message || '操作失败');
+  } finally {
+    bulkBusy.value = '';
+  }
+};
+
 const errorMeta = () => (errorCode.value ? getSendErrorMeta(errorCode.value as SendErrorCode) : null);
 
 const restoreSortPref = async () => {
@@ -247,15 +275,40 @@ onBeforeUnmount(() => {
           size="small"
           @change="void load(true)"
         />
-        <div v-if="scope === 'ing' && totalSpeed > 0" class="total-speed">
-          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 4v10.5" />
-            <path d="M7.5 11l4.5 4.5 4.5-4.5" />
-            <path d="M5 19.5h14" />
-          </svg>
-          <span>总速度</span>
-          <span class="value">{{ bytes(totalSpeed) }}/s</span>
-        </div>
+        <template v-if="scope === 'ing'">
+          <a-button
+            class="bulk-btn"
+            :class="{ 'is-busy': bulkBusy === 'resume' }"
+            size="small"
+            title="全部开始：继续所有已暂停 / 失败的任务"
+            aria-label="全部开始"
+            :disabled="resumableCount === 0 || bulkBusy !== ''"
+            @click="void runBulkAction('PHASE_TYPE_RUNNING')"
+          >
+            <svg v-if="bulkBusy === 'resume'" class="ico spinner" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+            <svg v-else class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8.5 6v12c0 .8.9 1.3 1.6.9l9.5-6c.6-.4.6-1.3 0-1.7l-9.5-6c-.7-.5-1.6 0-1.6.8z" />
+            </svg>
+          </a-button>
+          <a-button
+            class="bulk-btn"
+            :class="{ 'is-busy': bulkBusy === 'pause' }"
+            size="small"
+            title="全部暂停：暂停所有下载中 / 等待中的任务"
+            aria-label="全部暂停"
+            :disabled="pausableCount === 0 || bulkBusy !== ''"
+            @click="void runBulkAction('PHASE_TYPE_PAUSED')"
+          >
+            <svg v-if="bulkBusy === 'pause'" class="ico spinner" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+            <svg v-else class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9.5 5.5v13M14.5 5.5v13" />
+            </svg>
+          </a-button>
+        </template>
       </span>
       <span class="toolbar-actions">
         <a-dropdown :trigger="['click']" placement="bottomRight">
@@ -414,8 +467,8 @@ onBeforeUnmount(() => {
 /* 换页签走静默加载（load(true)），刷新按钮只在手动点击时转 spinner——
    切页签过程工具栏没有任何宽度变化，排序按钮不会被推挤 */
 
-/* 页签与总速度编成左组贴左对齐，按钮组贴右；左组可收缩，
-   总速度随之省略号截断，超高倍缩放的窄弹窗里不撑爆工具栏 */
+/* 页签与批量按钮编成左组贴左对齐，按钮组贴右；左组可收缩，
+   超高倍缩放的窄弹窗里不撑爆工具栏（总速度已上移到页签行右侧） */
 .toolbar-left {
   display: inline-flex;
   align-items: center;
@@ -424,37 +477,14 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-/* 数字 tabular-nums 宽度变化极小，左组内浮动不影响右侧排序按钮 */
-.total-speed {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-  font-variant-numeric: tabular-nums;
+/* 批量按钮 busy 时图标换成 3/4 圆弧旋转（同任务行操作）。
+   不用 antd :loading——它会在自绘图标旁再插一个转圈节点，按钮变宽且图标被挤出 */
+.bulk-btn .spinner circle {
+  stroke-dasharray: 42 14;
 }
 
-.total-speed .ico {
-  display: block;
-  width: 13px;
-  height: 13px;
-  flex: none;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.total-speed .value {
-  color: #0958d9;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.bulk-btn.is-busy .ico {
+  animation: act-spin 0.7s linear infinite;
 }
 
 .error {

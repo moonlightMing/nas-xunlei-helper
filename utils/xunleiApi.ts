@@ -57,6 +57,11 @@ export const PHASE_IN_PROGRESS: XunleiPhase[] = [
 ];
 export const PHASE_DONE: XunleiPhase[] = ['PHASE_TYPE_COMPLETE'];
 
+/** 可暂停的任务状态（与 popup 单任务「暂停」按钮的判断一致） */
+export const PHASE_PAUSABLE: XunleiPhase[] = ['PHASE_TYPE_RUNNING', 'PHASE_TYPE_PENDING'];
+/** 可继续的任务状态（与 popup 单任务「继续」按钮的判断一致） */
+export const PHASE_RESUMABLE: XunleiPhase[] = ['PHASE_TYPE_PAUSED', 'PHASE_TYPE_ERROR'];
+
 /** 下载任务类型：直链/磁力走 download-url，本地种子走 download */
 export const TASK_TYPE_URL = 'user#download-url';
 export const TASK_TYPE_LOCAL = 'user#download';
