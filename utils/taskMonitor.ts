@@ -7,7 +7,7 @@ import {
   type TaskStateSnapshot,
 } from '@/utils/xunleiAutomation';
 import { findXunleiTab } from '@/utils/xunleiTab';
-import { getDeviceSpace, listTasks } from '@/utils/xunleiApi';
+import { getDeviceSpace, listTasks, taskStatusMessage } from '@/utils/xunleiApi';
 
 export const MONITOR_ALARM_NAME = 'nas-xunlei-task-monitor';
 export const MONITOR_STORAGE_KEY = 'nas_xunlei_monitor';
@@ -221,7 +221,8 @@ function upsertTask(
       if (item.name) existing.name = item.name;
       if (item.phase) existing.phase = item.phase;
       if (item.progress !== undefined) existing.progress = item.progress;
-      if (item.detail) existing.detail = item.detail;
+      // detail 无条件跟随最新快照：任务从「等待中」转入失败后，原因要替换掉 PENDING 文案而不是残留
+      existing.detail = item.detail ?? '';
       existing.lastSeenAt = now;
       existing.missedScans = 0;
     }
@@ -312,7 +313,10 @@ async function processSession(
   for (const task of completions) task.notifiedComplete = true;
 
   if (failures.length && settings.notifyOnDownloadFailure) {
-    await showTaskFailure(failures.map((task) => ({ id: task.id, name: task.name })));
+    // detail 是任务失败原因（接口 message / 页面 error_description 兜底链），可能为空
+    await showTaskFailure(
+      failures.map((task) => ({ id: task.id, name: task.name, reason: task.detail })),
+    );
   }
   if (completions.length && settings.notifyOnDownloadComplete) {
     await showTaskComplete(completions.map((task) => ({ id: task.id, name: task.name })));
@@ -466,7 +470,8 @@ async function scanApiSession(
           name: task.name || task.file_name || '',
           phase: task.phase,
           progress: Number(task.progress ?? 0) || 0,
-          detail: task.message ?? '',
+          // 失败原因优先 params.error（具体），message 兜底；与 popup 任务卡同口径
+          detail: taskStatusMessage(task),
           type: task.type,
         };
       }

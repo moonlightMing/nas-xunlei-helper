@@ -55,6 +55,8 @@ export interface XunleiSettings {
   notifyOnPathFallback: boolean;
   /** 是否在发送后监控下载任务状态 */
   monitorDownloads: boolean;
+  /** 是否在工具栏图标上显示进行中的下载任务数角标 */
+  badgeTaskCount: boolean;
   /** 下载任务失败时是否弹桌面通知 */
   notifyOnDownloadFailure: boolean;
   /** 下载任务完成时是否弹桌面通知 */
@@ -73,6 +75,7 @@ export const DEFAULT_SETTINGS: XunleiSettings = {
   notifyOnSendFailure: true,
   notifyOnPathFallback: true,
   monitorDownloads: true,
+  badgeTaskCount: true,
   notifyOnDownloadFailure: true,
   notifyOnDownloadComplete: false,
   avMatch: cloneAvMatchSettings(DEFAULT_AV_MATCH_SETTINGS),
@@ -127,6 +130,7 @@ function normalizeSettings(raw: unknown): XunleiSettings {
       DEFAULT_SETTINGS.notifyOnPathFallback,
     ),
     monitorDownloads: booleanOrDefault(input.monitorDownloads, DEFAULT_SETTINGS.monitorDownloads),
+    badgeTaskCount: booleanOrDefault(input.badgeTaskCount, DEFAULT_SETTINGS.badgeTaskCount),
     notifyOnDownloadFailure: booleanOrDefault(
       input.notifyOnDownloadFailure,
       DEFAULT_SETTINGS.notifyOnDownloadFailure,

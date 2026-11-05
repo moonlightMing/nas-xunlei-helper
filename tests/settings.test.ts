@@ -32,6 +32,18 @@ describe('normalizeSettings 回落方向', () => {
     });
     expect((await mod.ensureSettingsLoaded()).downloadMode).toBe('immediate');
   });
+
+  it('badgeTaskCount 缺失时回落为开启（默认显示角标）', async () => {
+    const { mod } = await loadSettingsModule({ nas_xunlei_settings: { xunleiUrl: 'http://nas' } });
+    expect((await mod.ensureSettingsLoaded()).badgeTaskCount).toBe(true);
+  });
+
+  it('显式关闭的 badgeTaskCount 保留 false', async () => {
+    const { mod } = await loadSettingsModule({
+      nas_xunlei_settings: { xunleiUrl: 'http://nas', badgeTaskCount: false },
+    });
+    expect((await mod.ensureSettingsLoaded()).badgeTaskCount).toBe(false);
+  });
 });
 
 describe('ensureSettingsLoaded 失败重试', () => {

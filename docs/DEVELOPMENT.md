@@ -42,7 +42,7 @@ GitHub Actions（`.github/workflows/check.yml`）在 push / PR 时自动执行 `
 
 ```text
 entrypoints/
-  background.ts          # 右键菜单、消息路由、发送编排、通知动作、任务监控 alarm
+  background.ts          # 右键菜单、消息路由、发送编排、通知动作、任务监控/角标 alarm
   options/               # 控制面板（设置、番号匹配、测试连接、目录树、发送记录）
     components/          # 番号匹配配置表单与只读规则预览
   popup/                 # 工具栏弹窗：下载任务页 + 发送链接页
@@ -61,9 +61,13 @@ utils/
   history.ts             # 发送记录
   notifications.ts       # 桌面通知与通知按钮动作
   taskMonitor.ts         # 下载任务监控 alarm 与状态比对
+  badge.ts               # 工具栏图标任务数角标：原生 setBadgeText 角标 + 小主体留白图标、独立刷新 alarm、开关同步
 scripts/
   deploy.mjs             # 本地一键构建并部署到调试浏览器
-public/icons/            # 扩展图标（16/48/128）
+  generate-icons.mjs     # assets/icon.svg → public/icons 16/32/48/128 PNG（build/zip 自动执行）
+assets/
+  icon.svg               # 扩展图标矢量源（主体满幅，留白比例在生成脚本里调）
+public/icons/            # 扩展图标（16/32/48/128，生成物勿手改）
 wxt.config.ts            # 扩展清单与构建配置
 ```
 
@@ -241,6 +245,14 @@ PowerShell 中设置方式为 `$env:XUNLEI_DEBUG_PORT=9333; pnpm deploy`。
 - [ ] 确认后下载：发送后等待 2 分钟再点「立即下载」→ 监控仍能发现并跟踪任务
 - [ ] 监控中关闭迅雷页面：约 3 分钟后记录显示“监控停止：迅雷页面已关闭”，不弹失败通知
 - [ ] 关闭「下载任务监控」后，发送不再产生监控记录/任务通知
+
+**图标任务数角标**
+
+- [ ] 有进行中任务时，工具栏图标显示对应数字；全部完成/删除后角标消失
+- [ ] 打开 popup 任务页后角标立即与「进行中」页签数量一致（顺带刷新，无额外请求）
+- [ ] 关闭迅雷页面/NAS 断开：角标保持上次数值不闪烁；恢复后下一分钟自动纠正
+- [ ] 设置页关闭「图标任务数角标」：角标立即清空且不再刷新；重新开启后下一分钟恢复显示
+- [ ] 重启调试浏览器：扩展图标出现后角标数字立即恢复（storage.local 持久化），随后随接口结果纠正
 
 ## 相关文档
 

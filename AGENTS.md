@@ -9,7 +9,7 @@
 - Node.js **>= 22**（WXT 0.21 要求，部署脚本也依赖全局 `fetch` / `WebSocket`），必须使用 pnpm（仓库有 `pnpm-lock.yaml`，勿改用 npm/yarn）。
 - 发送原理：有两条可选链路，由设置项 `sendMode` 切换。**页面自动化（`dom`，默认）**复用浏览器已登录的迅雷 Web 会话，用 `chrome.scripting.executeScript` 注入脚本，按 DOM 选择器模拟「新建任务 → 填链接 → 解析 → 立即下载」，保存路径通过读取页面 Vuex 并调用面板自身的目录 action 预选。**接口直连（`api`）**不打开页面，由 `utils/xunleiApi.ts` 调用套件自身的 `drive/v1` gRPC-gateway 接口（解析 → 番号匹配 → 建任务），鉴权用套件首页下发的短期令牌，不存储账号密码。接口模式的「确认后下载」由扩展自绘确认窗口完成（见「接口模式的确认窗口」），不是迅雷弹窗。**下载模式默认「确认后下载」**：页面自动化停在迅雷确认框，接口模式打开自绘确认窗口。发送前有页面探针与错误分类（仅 `dom`）；两种模式都可监控下载任务状态——`dom` 通道只读复用页面 Vuex 与面板自身的 `drive/getTask`，`api` 通道直接读 `drive/v1/tasks`，都不自行拼接任务查询请求。
 - 番号匹配：磁力/种子解析后从 BT 文件树中按番号自动勾选目标文件；默认严格模式，可切换回退；支持类型/大小/关键词/排序/每任务上限。两种模式共用 `utils/avMatch.ts` 的纯函数决策，差别只在落地方式——`dom` 调面板树组件 `setCheckedKeys`，`api` 把选中序号编码成接口的 `sub_file_index`。`api` 模式下每个链接是独立任务，未匹配的只暂停自己，不会像 `dom` 那样受单个「立即下载」按钮连累整单。配置页独立 tab，含只读规则预览（粘贴文件名、本地文件夹、当前迅雷弹窗），不上传文件。
-- 通知体系使用固定通知 ID 与 `storage.session` 保存的按钮动作，区分发送失败、路径回退、任务失败与任务完成；发送成功通知和任务完成通知默认关闭，发送失败与任务失败默认开启。
+- 通知体系使用固定通知 ID 与 `storage.session` 保存的按钮动作，区分发送失败、路径回退、任务失败与任务完成；发送成功通知和任务完成通知默认关闭，发送失败与任务失败默认开启。工具栏图标角标（`utils/badge.ts`，设置项 `badgeTaskCount` 默认开启）显示 NAS 上进行中任务数：**用原生 `setBadgeText`（#1677ff）+ public/icons 四尺寸图标本体「小主体居中 + 透明留白」设计（源文件是 assets/icon.svg，build/zip 时经 scripts/generate-icons.mjs 用 resvg 渲染成 16/32/48/128 PNG，工具栏 manifest 配 action.default_icon 用 32 档保证高 DPI 锐度）的组合——角标数字叠加在留白处，大而清晰不遮图标；不要把图标改回满幅设计，那样原生角标会盖住主体（canvas 自绘数字卡的方案已试过并否决，观感无法与原生角标对齐）**；数量 >99 折叠 `99+`；应用侧有数量去重（数量不变不重写），并持久化到 `nas_xunlei_badge_count`（SW 启动先恢复上次数字，见「存储键」）。数据走 `drive/v1/tasks`（与 popup「进行中」页签同口径、与 `sendMode` 无关），由独立常驻 alarm（`nas-xunlei-badge-refresh`，每分钟）+ popup 轮询 `tasks/list` 顺带更新 + SW 启动时刷新；接口失败保持旧值静默重试，开关关闭/地址缺失或非法时清空角标并停 alarm，不与任务监控 alarm 共用生命周期。
 - 当前为原型重写版。`manifest.version` 在 `wxt.config.ts` 中硬编码（以该文件当前值为准，不要在别处内联版本号），与 `package.json` 的 `version` 需保持同步，递增与日志规则见「版本与更新日志」。
 
 ## 上游与许可
@@ -119,16 +119,19 @@
 | `utils/history.ts` | 发送记录、监控摘要回写、中断标记、清空与监听 |
 | `utils/notifications.ts` | 固定通知 ID、按钮动作、发送/任务通知策略 |
 | `utils/taskMonitor.ts` | 任务监控 session、1 分钟 alarm、状态比对、合并通知 |
+| `utils/badge.ts` | 工具栏图标任务数角标：数量文本纯函数（>99 折叠 `99+`）、原生 setBadgeText + 小主体留白图标、独立常驻刷新 alarm、开关/地址变化同步清空 |
 | `utils/taskSort.ts` | popup 任务列表排序纯函数：按页签字段/方向偏好、菜单点击转移、存储读回归一化（含旧格式迁移）、标签、稳定排序 |
 | `utils/popupFit.ts` | 弹窗被浏览器限高时把 `#app` 钉到视口高度，让列表压缩到可见空间内滚动（仅在文档真实溢出时写入样式） |
 | `entrypoints/options/` | 控制面板：设置、番号匹配、测试连接、目录树、发送记录、引导 |
 | `entrypoints/options/components/` | `AvMatchPanel.vue` 配置表单、`AvMatchPreview.vue` 只读规则预览 |
 | `entrypoints/popup/` | 工具栏弹窗：`a-tabs` 双页外壳（下载任务 / 发送链接）、打开设置与迅雷 |
-| `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除、批量全部开始/全部暂停（`operate-all`，总速度上抛 App 页签行显示）、两页签任务排序（`utils/taskSort.ts`，偏好存 `nas_xunlei_task_sort`）；`SendPanel.vue` 链接解析去重与发送结果动作 |
+| `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除、批量全部开始/全部暂停（`operate-all`，总速度上抛 App 页签行显示）、两页签任务排序（`utils/taskSort.ts`，偏好存 `nas_xunlei_task_sort`）、「失败」标签悬停显示失败原因；`SendPanel.vue` 链接解析去重与发送结果动作 |
 | `scripts/deploy.mjs` | 本地构建与调试浏览器部署 |
+| `scripts/generate-icons.mjs` | 图标生成：assets/icon.svg（矢量源）经 resvg 渲染成 public/icons 的 16/32/48/128 PNG；`CONTENT_RATIO` 控制主体留白（留白是给原生角标数字的，勿改小） |
+| `assets/icon.svg` | 扩展图标矢量源（主体满幅设计，留白由生成脚本注入）；改图标设计只改这个文件，跑 `pnpm icons` 或任意 build |
 | `docs/DEVELOPMENT.md` | 面向开发者：工作原理、结构、构建命令、调试部署、开发排障、手动测试清单 |
 | `wxt.config.ts` | manifest：权限（含 `alarms`）、host 权限、options 页、图标、版本 |
-| `public/icons/` | 16/48/128 像素扩展图标 |
+| `public/icons/` | 16/32/48/128 像素扩展图标（**生成物**，源是 `assets/icon.svg`，勿手改） |
 
 发送链路：`popup` 或右键菜单 → `background.sendLinksToNas()`（内存锁 + `storage.session` 持久锁与 5 分钟总超时，见上）→ 解析/校验链接与设置 → 写 running 历史 → **按 `sendMode` 分流**：`api` 走 `sendViaApi()`（解析→番号匹配→建任务，全程不碰页面，见「关键实现约束」；`downloadMode: 'confirm'` 时只准备待确认任务并打开确认窗口，不建任务）；`dom` 继续下面的注入链路 → `openXunleiTab()`（复用标签页时激活、必要时 reload、等待加载）→ `inspectXunleiPage()` / `classifyProbe()` 预检 → `readTaskState()` 记录任务 id 基线（立即模式同时用于重复资源只读查重）→ `runSendFlow()` 逐步注入：
 
@@ -161,10 +164,11 @@
 - `nas_xunlei_pan_auth`：接口模式的 `uiauth` JWT 缓存（含签发地址与 exp），`storage.session`，不落 local/sync
 - `nas_xunlei_pending_confirm`：接口模式等待用户确认的任务（文件树/预选/目录，不含令牌），`storage.session`，30 分钟过期；成功提交、显式取消或关闭窗口后删除，**全部建任务失败时保留**（确认窗口内可「重试提交」），确认页按 `PENDING_TTL_MS` 自行显示剩余时间并过期禁提交
 - `nas_xunlei_send_lock`：发送互斥锁 `{at}`，`storage.session`，超过总超时视为孤儿可被覆盖；诊断入口与发送共用
+- `nas_xunlei_badge_count`：上次角标数量 `{count, at}`，`storage.local`；浏览器重启会清掉原生角标文本，SW 启动时先恢复此值再由接口结果纠正（原生角标是会话级状态，MV3 SW 懒唤醒，不持久化会让重启后角标空白一阵）
 
 ### 任务监控
 
-发送前读取 `drive.all/tasks/tasksDone` 得到任务 id 基线；立即下载时 `confirm-download` 还会返回点击后的当前任务 id，background 用「当前 id - 基线」得到候选。`utils/taskMonitor.ts` 用 1 分钟 alarm 扫描，session 分两条通道：`channel: 'dom'` 复用迅雷页面——发现期（立即下载 2 分钟、确认后下载 30 分钟）把新任务纳入，跟踪期对非终态任务复用 `drive/getTask`（每次最多 3 个）；`channel: 'api'` 用于接口模式发送（建任务后即拿到精确 id），扫描直接调 `drive/v1/tasks` 按 id 批量读取，不要求打开迅雷页面，令牌/接口连续失败按 `api-unavailable` 停止。两条通道都读 `PHASE_TYPE_*` 状态：`PHASE_TYPE_ERROR` 记失败、`PHASE_TYPE_COMPLETE` 记完成，`PAUSED` 不通知。每轮扫描最多一条失败和一条完成通知，名称最多列 3 个；同一任务按 id 去重。全部终态、无任务、页面关闭（仅 dom 通道）、连续读取失败、用户关闭监控或 24 小时硬超时后停止，并把摘要/原因写回发送记录。页面关闭不自动重开。
+发送前读取 `drive.all/tasks/tasksDone` 得到任务 id 基线；立即下载时 `confirm-download` 还会返回点击后的当前任务 id，background 用「当前 id - 基线」得到候选。`utils/taskMonitor.ts` 用 1 分钟 alarm 扫描，session 分两条通道：`channel: 'dom'` 复用迅雷页面——发现期（立即下载 2 分钟、确认后下载 30 分钟）把新任务纳入，跟踪期对非终态任务复用 `drive/getTask`（每次最多 3 个）；`channel: 'api'` 用于接口模式发送（建任务后即拿到精确 id），扫描直接调 `drive/v1/tasks` 按 id 批量读取，不要求打开迅雷页面，令牌/接口连续失败按 `api-unavailable` 停止。两条通道都读 `PHASE_TYPE_*` 状态：`PHASE_TYPE_ERROR` 记失败、`PHASE_TYPE_COMPLETE` 记完成，`PAUSED` 不通知。失败原因的取值口径由 `utils/xunleiApi.ts` 的 `taskStatusMessage` 统一（2026-11-05 线上实测：**新建任务的顶层 `message` 失败时常常只是「失败」二字，具体原因在 `params.error`**，如「任务超时,已重试10次,请更换资源」，另有 `params.retry_times`/`retry_record` 辅助字段；老 offline 任务相反，详细文案在顶层 `message`、无 `params.error`——所以失败态必须 `params.error` 优先、`message` 兜底，PENDING 的「等待中」等状态文案仍取 `message`），存 `MonitoredTask.detail` 并无条件跟随最新快照覆盖；DOM 注入 `injectedReadTasks` 内联同序兜底链（注入函数不能 import 该纯函数）。popup 的「失败」标签悬停 tooltip 与失败通知都展示它。每轮扫描最多一条失败和一条完成通知，名称最多列 3 个；同一任务按 id 去重。全部终态、无任务、页面关闭（仅 dom 通道）、连续读取失败、用户关闭监控或 24 小时硬超时后停止，并把摘要/原因写回发送记录。页面关闭不自动重开。
 
 ## 关键实现约束
 

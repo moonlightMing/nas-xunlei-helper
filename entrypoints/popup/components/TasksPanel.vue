@@ -98,10 +98,13 @@ const reconcileTasks = (incoming: TaskSummary[]): TaskSummary[] => {
 const statusTone = (phase: string): string => PHASE_TONES[phase] ?? 'pending';
 
 const messageTone = (phase: string): string => {
-  if (phase === 'PHASE_TYPE_ERROR') return 'error';
   if (phase === 'PHASE_TYPE_PAUSED') return 'warn';
   return 'info';
 };
+
+/** 失败任务的悬停原因（迅雷 message 字段原文）；非失败或无内容时不显示 tooltip */
+const failureTip = (task: TaskSummary): string | undefined =>
+  task.phase === 'PHASE_TYPE_ERROR' && task.message ? task.message : undefined;
 
 /** 进行中页签所有下载中任务的速度之和（字节/秒），等待 / 暂停 / 失败任务不计入 */
 const totalSpeed = computed(() =>
@@ -348,10 +351,13 @@ onBeforeUnmount(() => {
         >
           <div class="item-head">
             <span class="name" :title="task.name">{{ task.name }}</span>
-            <span class="status" :class="statusTone(task.phase)">
-              <i class="status-dot" />
-              {{ PHASE_LABELS[task.phase] ?? task.phase }}
-            </span>
+            <!-- 失败原因来自迅雷任务的 message 字段，仅在失败且有内容时悬停显示 -->
+            <a-tooltip :title="failureTip(task)">
+              <span class="status" :class="statusTone(task.phase)">
+                <i class="status-dot" />
+                {{ PHASE_LABELS[task.phase] ?? task.phase }}
+              </span>
+            </a-tooltip>
             <span class="actions">
               <button
                 v-if="task.phase === 'PHASE_TYPE_RUNNING' || task.phase === 'PHASE_TYPE_PENDING'"
@@ -425,8 +431,9 @@ onBeforeUnmount(() => {
             <span class="stat">{{ statText(task) }}</span>
             <span v-if="task.realPath" class="path" :title="task.realPath">{{ task.realPath }}</span>
           </div>
+          <!-- 失败原因在右上状态 tag 悬停展示，这里不再重复整行红字 -->
           <div
-            v-if="task.message && task.phase !== 'PHASE_TYPE_COMPLETE'"
+            v-if="task.message && task.phase !== 'PHASE_TYPE_COMPLETE' && task.phase !== 'PHASE_TYPE_ERROR'"
             class="message"
             :class="messageTone(task.phase)"
           >
@@ -660,10 +667,6 @@ onBeforeUnmount(() => {
 
 .message.warn {
   color: #d46b08;
-}
-
-.message.error {
-  color: #cf1322;
 }
 
 /* 操作收进标题行右上角：默认灰、悬停才显色，删除保持二次确认 */

@@ -1,3 +1,10 @@
+import {
+  BADGE_ALARM_NAME,
+  refreshTaskBadge,
+  restoreBadgeCount,
+  updateTaskBadge,
+  watchBadgeSettings,
+} from '@/utils/badge';
 import { clearHistory, finishEntry, markInterruptedRuns, startEntry } from '@/utils/history';
 import { extractLinks, extractResourceKey, parseLinks } from '@/utils/links';
 import type {
@@ -26,7 +33,6 @@ import {
   ensureSettingsLoaded,
   getSettings,
   validateXunleiUrl,
-  watchSettingsStorage,
   type XunleiSettings,
 } from '@/utils/settings';
 import {
@@ -72,6 +78,7 @@ import {
   operateTask,
   parseResources,
   resolveFolderIdByPath,
+  taskStatusMessage,
   PHASE_DONE,
   PHASE_IN_PROGRESS,
   PHASE_PAUSABLE,
@@ -160,8 +167,9 @@ async function isSendBusy(): Promise<boolean> {
 }
 
 export default defineBackground(() => {
-  // Service Worker 常驻期间也要感知设置页的修改，避免发送时沿用旧路径
-  watchSettingsStorage(() => {});
+  // Service Worker 常驻期间也要感知设置页的修改，避免发送时沿用旧路径；
+  // 角标开关关闭时顺带清空图标角标
+  watchBadgeSettings();
   void bootstrap();
 
   chrome.runtime.onInstalled.addListener((details) => {
@@ -219,6 +227,7 @@ export default defineBackground(() => {
 
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === MONITOR_ALARM_NAME) void scanMonitors();
+    if (alarm.name === BADGE_ALARM_NAME) void refreshTaskBadge();
   });
 
   chrome.windows.onRemoved.addListener((windowId) => {
@@ -230,6 +239,10 @@ async function bootstrap(): Promise<void> {
   await markInterruptedRuns();
   await ensureMonitorAlarm();
   await expireConfirmations();
+  // 浏览器重启会清掉原生角标文本：先从 storage.local 恢复上次数字（不等接口），
+  // 再按当前设置刷新角标并确保 alarm 存在（SW 冷启动也会走到这里）
+  await restoreBadgeCount();
+  await refreshTaskBadge();
 }
 
 /** 确认窗口 30 分钟未提交时按取消处理，避免发送记录永远停在等待状态 */
@@ -375,7 +388,8 @@ function toTaskSummary(task: XunleiTask): TaskSummary {
     totalSize: toNumber(task.file_size),
     checkedSize: toNumber(task.params?.checked_size),
     realPath: task.params?.real_path ?? '',
-    message: task.message ?? '',
+    // 失败任务优先取 params.error（具体原因），否则顶层 message（等待中/已暂停等状态文案）
+    message: taskStatusMessage(task),
     createdAt: toTimestamp(task.created_time),
   };
 }
@@ -408,15 +422,22 @@ async function listTasksViaApi(tab: 'ing' | 'done', limit?: number): Promise<Lis
     return { ok: false, tasks: [], code: prepared.error.code, message: prepared.error.message };
   }
   try {
+    const effectiveLimit = limit ?? 50;
     const result = await listTasks(prepared.url, {
       space: prepared.space,
       phases: tab === 'done' ? PHASE_DONE : PHASE_IN_PROGRESS,
       types: [TASK_TYPE_URL, TASK_TYPE_LOCAL],
-      limit: limit ?? 50,
+      limit: effectiveLimit,
     });
+    const tasks = result.tasks ?? [];
+    // popup 打开期间高频轮询此消息：顺带刷新角标（零额外请求）。结果顶到
+    // limit 说明可能被截断、数量不可信，留给每分钟角标 alarm 全量纠正
+    if (tab === 'ing' && tasks.length < effectiveLimit) {
+      updateTaskBadge(tasks.length);
+    }
     return {
       ok: true,
-      tasks: (result.tasks ?? []).map(toTaskSummary),
+      tasks: tasks.map(toTaskSummary),
       expiresIn: result.expires_in,
     };
   } catch (error) {

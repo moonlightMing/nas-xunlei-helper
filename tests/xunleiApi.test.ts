@@ -5,6 +5,7 @@ import {
   invalidatePanAuth,
   listTasks,
   operateTask,
+  taskStatusMessage,
   toApiBase,
   XunleiApiError,
   type ResourceNode,
@@ -52,6 +53,30 @@ describe('toApiBase', () => {
   it('未配置或格式错误抛 token-missing', () => {
     expect(() => toApiBase('')).toThrow(XunleiApiError);
     expect(() => toApiBase('not a url')).toThrowError(/地址格式不正确/);
+  });
+});
+
+describe('taskStatusMessage（失败原因取值口径）', () => {
+  // 2026-11-05 线上实测：新任务失败时顶层 message 只是「失败」，具体原因在 params.error
+  it('失败任务优先取 params.error，顶层 message 兜底', () => {
+    expect(
+      taskStatusMessage({
+        phase: 'PHASE_TYPE_ERROR',
+        message: '失败',
+        params: { error: '任务超时,已重试10次,请更换资源' },
+      }),
+    ).toBe('任务超时,已重试10次,请更换资源');
+    expect(taskStatusMessage({ phase: 'PHASE_TYPE_ERROR', message: '任务连接超时，无法添加到云盘' })).toBe(
+      '任务连接超时，无法添加到云盘',
+    );
+    expect(taskStatusMessage({ phase: 'PHASE_TYPE_ERROR' })).toBe('');
+  });
+
+  it('非失败状态不受 params.error 影响，保持顶层 message', () => {
+    expect(taskStatusMessage({ phase: 'PHASE_TYPE_PENDING', message: '等待中', params: { error: '历史错误' } })).toBe(
+      '等待中',
+    );
+    expect(taskStatusMessage({ phase: 'PHASE_TYPE_RUNNING' })).toBe('');
   });
 });
 

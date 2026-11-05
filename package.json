@@ -11,13 +11,14 @@
     "url": "https://github.com/moonlightMing/nas-xunlei-helper/issues"
   },
   "private": true,
-  "version": "0.10.0",
+  "version": "0.11.0",
   "type": "module",
   "packageManager": "pnpm@11.21.0",
   "scripts": {
     "dev": "wxt",
-    "build": "wxt build",
-    "zip": "wxt zip",
+    "icons": "node scripts/generate-icons.mjs",
+    "build": "node scripts/generate-icons.mjs && wxt build",
+    "zip": "node scripts/generate-icons.mjs && wxt zip",
     "compile": "vue-tsc --noEmit",
     "check": "pnpm compile && pnpm build",
     "test": "vitest run",
@@ -30,6 +31,7 @@
     "vue": "^3.5.39"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/chrome": "^0.2.1",
     "@types/node": "^26.6.5",
     "@wxt-dev/module-vue": "^1.0.3",

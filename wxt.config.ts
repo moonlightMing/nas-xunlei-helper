@@ -6,7 +6,7 @@ export default defineConfig({
   manifest: {
     name: "NAS 迅雷助手",
     description: "将浏览器中的下载链接一键发送到 NAS 迅雷远程下载。",
-    version: "0.10.0",
+    version: "0.11.0",
     // NAS 地址由用户在设置页动态配置，因此放行 http/https 全域，
     // 覆盖「打开迅雷页标签页注入脚本」与「右键菜单取链接」两类场景
     permissions: ["storage", "contextMenus", "tabs", "scripting", "notifications", "alarms"],
@@ -17,8 +17,16 @@ export default defineConfig({
     },
     icons: {
       16: "/icons/16.png",
+      32: "/icons/32.png",
       48: "/icons/48.png",
       128: "/icons/128.png",
+    },
+    action: {
+      default_icon: {
+        16: "/icons/16.png",
+        32: "/icons/32.png",
+        48: "/icons/48.png",
+      },
     },
   },
 });

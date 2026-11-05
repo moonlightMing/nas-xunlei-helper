@@ -1552,19 +1552,18 @@ async function injectedReadTasks(trackedIds: string[], refresh: boolean) {
 
   const put = (id: string, task: any) => {
     if (!task || typeof task !== 'object') return;
+    const phase = String(task.phase || task.params?.phase || '').toUpperCase();
     tasks[id] = {
       id,
       name: String(task.name || task.file_name || task.params?.name || ''),
-      phase: String(task.phase || task.params?.phase || '').toUpperCase(),
+      phase,
       progress: Number(task.progress ?? task.params?.progress ?? 0) || 0,
-      detail: String(
-        task.error_description ||
-          task.error_message ||
-          task.message ||
-          task.params?.error_description ||
-          task.params?.message ||
-          '',
-      ),
+      // 失败原因与 utils/xunleiApi.ts 的 taskStatusMessage 同口径：
+      // 失败任务优先 params.error（具体原因），其余状态用顶层 message
+      detail:
+        phase === 'PHASE_TYPE_ERROR'
+          ? String(task.params?.error || task.error_description || task.error_message || task.message || '')
+          : String(task.message || ''),
       type: String(task.type || ''),
       url: String(task.params?.url || ''),
       infoHash: String(task.params?.info_hash || '').toUpperCase(),

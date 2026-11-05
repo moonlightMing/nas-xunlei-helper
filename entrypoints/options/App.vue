@@ -590,6 +590,14 @@ function monitorText(item: SendHistoryEntry): string {
 
               <div class="switch-row">
                 <div>
+                  <div class="switch-label">图标任务数角标</div>
+                  <div class="switch-extra">在浏览器工具栏图标上显示进行中的下载任务数，约每分钟自动刷新；NAS 暂时不可达时保持上次数值。</div>
+                </div>
+                <a-switch v-model:checked="form.badgeTaskCount" />
+              </div>
+
+              <div class="switch-row">
+                <div>
                   <div class="switch-label">发送成功通知</div>
                   <div class="switch-extra">默认关闭，避免每次发送都打扰；结果仍会显示在弹窗和发送记录中。</div>
                 </div>

@@ -81,6 +81,8 @@ export interface XunleiTaskParams {
   target?: string;
   mime_type?: string;
   file_id?: string;
+  /** 失败时的具体错误描述（如「任务超时,已重试10次,请更换资源」）；顶层 message 此时常常只是泛泛的「失败」 */
+  error?: string;
   [key: string]: unknown;
 }
 
@@ -102,6 +104,20 @@ export interface XunleiTask {
   created_time?: string;
   updated_time?: string;
   params?: XunleiTaskParams;
+}
+
+/**
+ * 任务状态文案的取值口径：失败任务优先取 params.error（具体错误，2026-11-05 线上实测
+ * 如「任务超时,已重试10次,请更换资源」；顶层 message 此时常常只是「失败」二字），
+ * 老 offline 任务没有 params.error、详细原因就在 message，作为兜底。
+ * popup 任务卡、失败通知、监控摘要都用它；注入函数（xunleiAutomation）无法 import，
+ * 需在 injectedReadTasks 里内联同序兜底链。
+ */
+export function taskStatusMessage(task: Pick<XunleiTask, 'phase' | 'message' | 'params'>): string {
+  if (task.phase === 'PHASE_TYPE_ERROR') {
+    return String(task.params?.error || task.message || '').trim();
+  }
+  return String(task.message ?? '').trim();
 }
 
 export interface XunleiFileParams {

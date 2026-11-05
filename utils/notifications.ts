@@ -185,14 +185,19 @@ export async function showSendResult(
   });
 }
 
-function taskName(task: { id: string; name: string }): string {
-  return task.name || `任务 ${task.id.slice(0, 6)}`;
+/** 任务通知条目：失败通知可带原因（迅雷任务的 message 字段，如「任务连接超时，无法添加到云盘」） */
+export interface TaskNoticeItem {
+  id: string;
+  name: string;
+  reason?: string;
 }
 
-function buildTaskMessage(
-  tasks: Array<{ id: string; name: string }>,
-  verb: string,
-): string {
+function taskName(task: TaskNoticeItem): string {
+  const base = task.name || `任务 ${task.id.slice(0, 6)}`;
+  return task.reason ? `${base}（${task.reason}）` : base;
+}
+
+function buildTaskMessage(tasks: TaskNoticeItem[], verb: string): string {
   const names = tasks.map(taskName);
   const shown = names.slice(0, 3).join('、');
   if (names.length === 1) return `任务${verb}：${shown}。打开迅雷查看详情。`;
@@ -200,9 +205,7 @@ function buildTaskMessage(
   return `${names.length} 个任务${verb}：${shown}${more}。打开迅雷查看详情。`;
 }
 
-export async function showTaskFailure(
-  tasks: Array<{ id: string; name: string }>,
-): Promise<void> {
+export async function showTaskFailure(tasks: TaskNoticeItem[]): Promise<void> {
   if (!tasks.length) return;
   await show(NOTIFICATION_IDS.taskFailure, {
     title: 'NAS 迅雷 · 下载失败',
@@ -213,9 +216,7 @@ export async function showTaskFailure(
   });
 }
 
-export async function showTaskComplete(
-  tasks: Array<{ id: string; name: string }>,
-): Promise<void> {
+export async function showTaskComplete(tasks: TaskNoticeItem[]): Promise<void> {
   if (!tasks.length) return;
   await show(NOTIFICATION_IDS.taskComplete, {
     title: 'NAS 迅雷 · 下载完成',
