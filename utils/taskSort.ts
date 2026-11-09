@@ -126,6 +126,23 @@ function cloneTaskSortMap(map: TaskSortPreferenceMap): TaskSortPreferenceMap {
 }
 
 /**
+ * 按关键词与状态过滤任务：关键词命中任务名或实际保存路径（均不区分
+ * 大小写），状态精确匹配 phase；两个条件同时生效（AND）。空关键词
+ * 与空状态（均为纯空白可）不做对应过滤，全空时返回原数组的浅拷贝；
+ * 不做排序，交给 sortTasks。
+ */
+export function filterTasks(tasks: TaskSummary[], keyword: string, phase = ''): TaskSummary[] {
+  const kw = keyword.trim().toLowerCase();
+  const needPhase = phase !== '';
+  if (!kw && !needPhase) return [...tasks];
+  return tasks.filter(
+    (task) =>
+      (!needPhase || task.phase === phase) &&
+      (!kw || task.name.toLowerCase().includes(kw) || task.realPath.toLowerCase().includes(kw)),
+  );
+}
+
+/**
  * 按偏好排序，返回新数组不改入参。数值同值时保持原相对次序
  * （ES2019 起 sort 稳定），保证轮询刷新下列表不跳动。
  */

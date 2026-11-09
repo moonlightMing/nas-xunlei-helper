@@ -43,14 +43,18 @@ const savedRecently = ref(false);
 const testing = ref(false);
 const form = reactive<XunleiSettings>({ ...DEFAULT_SETTINGS });
 const urlTouched = ref(false);
-const pathTouched = ref(false);
+/** 手动添加下载位置的输入行 */
+const newPath = ref('');
+const newPathTouched = ref(false);
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let savedFlashTimer: ReturnType<typeof setTimeout> | null = null;
 let savePending = false;
 
 const urlError = computed(() => (urlTouched.value ? validateXunleiUrl(form.xunleiUrl) : null));
-const pathError = computed(() => (pathTouched.value ? validateDownloadPath(form.downloadPath) : null));
+const newPathError = computed(() =>
+  newPathTouched.value && newPath.value.trim() ? validateDownloadPath(newPath.value) : null,
+);
 const saveHint = computed(() => {
   if (saving.value) return '保存中…';
   return savedRecently.value ? '已自动保存' : '修改后自动保存';
@@ -117,8 +121,39 @@ function buildSavePayload(): Partial<XunleiSettings> {
   const payload: Partial<XunleiSettings> = { ...form };
   delete payload.avMatch;
   payload.xunleiUrl = form.xunleiUrl.trim();
-  payload.downloadPath = form.downloadPath.trim();
+  payload.downloadPaths = form.downloadPaths.map((path) => path.trim()).filter(Boolean);
+  // 与列表首项同步，避免清空列表后被旧 downloadPath 单值迁移回来
+  payload.downloadPath = payload.downloadPaths[0] ?? '';
   return payload;
+}
+
+/* 下载位置列表：增删与设为默认（挪到首位） */
+function handleAddPath(): void {
+  const path = newPath.value.trim();
+  newPathTouched.value = true;
+  const error = validateDownloadPath(path);
+  if (error || !path) {
+    message.warning(error || '请先填写路径');
+    return;
+  }
+  if (form.downloadPaths.includes(path)) {
+    message.info('该位置已在列表中');
+    return;
+  }
+  form.downloadPaths.push(path);
+  newPath.value = '';
+  newPathTouched.value = false;
+}
+
+function handleRemovePath(index: number): void {
+  form.downloadPaths.splice(index, 1);
+}
+
+function handleSetDefaultPath(index: number): void {
+  if (index <= 0 || index >= form.downloadPaths.length) return;
+  const [path] = form.downloadPaths.splice(index, 1);
+  if (!path) return;
+  form.downloadPaths.unshift(path);
 }
 
 function snapshotWithoutAvMatch(input: Partial<XunleiSettings>): string {
@@ -187,7 +222,7 @@ const handleTestConnection = async () => {
     message.warning(urlError);
     return;
   }
-  const pathError = validateDownloadPath(form.downloadPath);
+  const pathError = form.downloadPaths.map(validateDownloadPath).find(Boolean);
   if (pathError) {
     message.warning(pathError);
     return;
@@ -272,7 +307,7 @@ function toDirNode(item: DirItem): DirNode {
   };
 }
 
-async function fetchDir(parentId: string, parentPath: string): Promise<DirItem[]> {
+async function fetchDir(parentId: string, parentPath: string): Promise<ListDirResponse> {
   const response = (await chrome.runtime.sendMessage({
     type: 'diagnostics',
     action: 'listDir',
@@ -285,7 +320,7 @@ async function fetchDir(parentId: string, parentPath: string): Promise<DirItem[]
 
   if (!response) throw new Error('后台无响应，请重试');
   if (!response.ok) throw new Error(response.message || '读取迅雷目录失败');
-  return response.items;
+  return response;
 }
 
 const handleOpenDirPicker = async () => {
@@ -299,8 +334,10 @@ const handleOpenDirPicker = async () => {
   dirLoading.value = true;
   dirTreeData.value = [];
   try {
-    const items = await fetchDir('', '');
+    const { items, via } = await fetchDir('', '');
     dirTreeData.value = items.map(toDirNode);
+    // 接口直连失败时后台复用迅雷标签页读取；如实说明，避免用户困惑多了个迅雷标签页
+    if (via === 'dom') message.info('接口直连不可用，已在后台迅雷标签页读取目录');
     if (!items.length) message.info('迅雷中没有可用的下载目录');
   } catch (error) {
     message.error((error as Error).message || '读取迅雷目录失败');
@@ -313,7 +350,7 @@ const loadDirChildren = async (node: any): Promise<void> => {
   const data = (node?.dataRef ?? node) as DirNode | undefined;
   if (!data?.id) return;
   try {
-    const items = await fetchDir(data.id, data.path);
+    const { items } = await fetchDir(data.id, data.path);
     data.children = items.map(toDirNode);
     if (!items.length) data.isLeaf = true;
     dirTreeData.value = [...dirTreeData.value];
@@ -336,10 +373,14 @@ const handleSelectDir = (_keys: unknown, info: { node?: unknown }): void => {
     message.warning('该目录不可写，请选择其它目录');
     return;
   }
-  form.downloadPath = data.path;
+  if (form.downloadPaths.includes(data.path)) {
+    message.info('该位置已在列表中');
+  } else {
+    form.downloadPaths.push(data.path);
+    message.success(`已添加 ${data.path}`);
+  }
   dirModalOpen.value = false;
   void persistSettings();
-  message.success(`已选择 ${data.path}`);
 };
 
 const sendHistoryLinks = async (item: SendHistoryEntry, force: boolean): Promise<void> => {
@@ -507,22 +548,61 @@ function monitorText(item: SendHistoryEntry): string {
               </a-form-item>
 
               <a-form-item>
-                <template #label><span class="label">默认下载位置</span></template>
-                <div class="path-row">
-                  <a-input
-                    v-model:value="form.downloadPath"
-                    placeholder="/downloads/movies"
-                    :status="pathError ? 'error' : undefined"
-                    allow-clear
-                    @blur="pathTouched = true"
-                  />
-                  <a-button @click="handleOpenDirPicker">从迅雷选择</a-button>
+                <template #label><span class="label">下载位置</span></template>
+                <div class="paths-box">
+                  <div v-if="!form.downloadPaths.length" class="paths-empty">
+                    未配置下载位置，发送时使用迅雷当前默认目录。
+                  </div>
+                  <ul v-else class="paths-list">
+                    <li
+                      v-for="(path, index) in form.downloadPaths"
+                      :key="path"
+                      :class="{ 'is-default': index === 0 }"
+                    >
+                      <span class="path-text" :title="path">
+                        <span v-if="index === 0" class="default-tag">默认</span>{{ path }}
+                      </span>
+                      <span class="path-actions">
+                        <a-button
+                          v-if="index > 0"
+                          size="small"
+                          type="text"
+                          class="mini-btn"
+                          @click="handleSetDefaultPath(index)"
+                        >
+                          设为默认
+                        </a-button>
+                        <a-button
+                          size="small"
+                          type="text"
+                          danger
+                          class="mini-btn"
+                          @click="handleRemovePath(index)"
+                        >
+                          删除
+                        </a-button>
+                      </span>
+                    </li>
+                  </ul>
+                  <div class="path-row">
+                    <a-input
+                      v-model:value="newPath"
+                      placeholder="/downloads/movies"
+                      :status="newPathError ? 'error' : undefined"
+                      allow-clear
+                      @blur="newPathTouched = true"
+                      @keydown.enter.prevent="handleAddPath"
+                    />
+                    <a-button @click="handleAddPath">添加</a-button>
+                    <a-button @click="handleOpenDirPicker">从迅雷选择</a-button>
+                  </div>
                 </div>
                 <template #extra>
-                  <span v-if="pathError" class="error-text">{{ pathError }}</span>
+                  <span v-if="newPathError" class="error-text">{{ newPathError }}</span>
                   <span v-else class="extra">
-                    填写迅雷面板中显示的路径（如 /downloads/movies），不是 NAS 宿主机路径；留空则使用迅雷当前默认目录。
-                    目录需已在迅雷中创建，插件不会自动建目录。
+                    第一个为默认位置；配置多个后发送时可在弹窗临时选用其它。路径是迅雷面板中显示的路径（如
+                    /downloads/movies），不是 NAS 宿主机路径。目录需已在迅雷中存在，插件不会自动建目录；
+                    可选根目录即迅雷中登记的下载位置，新增根需先在迅雷里登记。
                   </span>
                 </template>
               </a-form-item>
@@ -724,16 +804,18 @@ function monitorText(item: SendHistoryEntry): string {
       :footer="null"
     >
       <a-spin :spinning="dirLoading">
-        <div v-if="!dirTreeData.length && !dirLoading" class="dir-empty">
-          未读取到目录。请确认已在迅雷页面登录，并检查 NAS 迅雷地址。
+        <div class="dir-tree-scroll">
+          <div v-if="!dirTreeData.length && !dirLoading" class="dir-empty">
+            未读取到目录。请检查 NAS 迅雷地址是否正确、迅雷是否可访问。
+          </div>
+          <a-tree
+            v-if="dirTreeData.length"
+            :tree-data="dirTreeData"
+            :load-data="loadDirChildren"
+            block-node
+            @select="handleSelectDir"
+          />
         </div>
-        <a-tree
-          v-if="dirTreeData.length"
-          :tree-data="dirTreeData"
-          :load-data="loadDirChildren"
-          block-node
-          @select="handleSelectDir"
-        />
       </a-spin>
       <div class="dir-tip">只能选择已存在的目录；不可写目录已标注，插件不会自动创建目录。</div>
     </a-modal>
@@ -817,6 +899,82 @@ function monitorText(item: SendHistoryEntry): string {
 
 .path-row .ant-input {
   flex: 1;
+}
+
+/* 下载位置列表：默认行高亮，路径等宽字体便于读长路径 */
+.paths-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.paths-empty {
+  padding: 10px 12px;
+  border: 1px dashed #d9d9d9;
+  border-radius: 8px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.paths-list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.paths-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.paths-list li + li {
+  border-top: 1px solid #f0f0f0;
+}
+
+.paths-list li.is-default {
+  background: #f0f7ff;
+}
+
+.path-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.default-tag {
+  margin-right: 6px;
+  padding: 0 5px;
+  border: 1px solid #91caff;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: inherit;
+  line-height: 18px;
+  color: #1677ff;
+  background: #e6f4ff;
+}
+
+.path-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.mini-btn {
+  padding: 0 6px;
+  font-size: 12px;
+  height: 24px;
 }
 
 .section-title {
@@ -1028,6 +1186,13 @@ function monitorText(item: SendHistoryEntry): string {
   padding: 24px 0;
   text-align: center;
   color: rgba(0, 0, 0, 0.45);
+}
+
+/* 目录树限高内部滚动：子目录再多也不会把弹窗撑爆 */
+.dir-tree-scroll {
+  max-height: 55vh;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .dir-tip {

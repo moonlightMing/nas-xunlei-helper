@@ -39,7 +39,12 @@ export const SEND_MODE_LABELS: Record<SendMode, string> = {
 export interface XunleiSettings {
   /** NAS 迅雷 Web 地址（含 #/home），如 http://192.168.5.2:2345/webman/3rdparty/pan-xunlei-com/index.cgi/#/home */
   xunleiUrl: string;
-  /** 默认下载位置（NAS 路径，如 /downloads/movies）；留空 = 使用 NAS 当前默认目录 */
+  /**
+   * 下载位置候选列表（NAS 路径），首项为默认位置；发送时可在弹窗/确认窗口临时选用其它。
+   * 归一化时 trim、去空、按首次出现去重。
+   */
+  downloadPaths: string[];
+  /** 默认下载位置 = downloadPaths 首项的只读投影（旧数据迁移来源）；留空 = 使用 NAS 当前默认目录 */
   downloadPath: string;
   /** 下载模式 */
   downloadMode: DownloadMode;
@@ -67,6 +72,7 @@ export interface XunleiSettings {
 
 export const DEFAULT_SETTINGS: XunleiSettings = {
   xunleiUrl: '',
+  downloadPaths: [],
   downloadPath: '',
   downloadMode: 'confirm',
   sendMode: 'dom',
@@ -107,13 +113,31 @@ export function validateDownloadPath(path: string): string | null {
   return null;
 }
 
+/** downloadPaths 归一：仅收字符串项，trim、去空、按首次出现去重 */
+function normalizeDownloadPaths(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const value = item.trim();
+    if (!value) continue;
+    seen.add(value);
+  }
+  return [...seen];
+}
+
 function normalizeSettings(raw: unknown): XunleiSettings {
   const input = (raw && typeof raw === 'object' ? raw : {}) as Partial<XunleiSettings>;
+  // 新旧兼容：downloadPaths 非空时为准；否则迁移旧 downloadPath 单值
+  const downloadPaths = normalizeDownloadPaths(input.downloadPaths);
+  const legacyPath = typeof input.downloadPath === 'string' ? input.downloadPath.trim() : '';
+  const effectivePaths = downloadPaths.length ? downloadPaths : legacyPath ? [legacyPath] : [];
   return {
     // 校验失败的已存值原样保留（不静默改写），使用方（发送链路）发送前需再校验
     xunleiUrl: typeof input.xunleiUrl === 'string' ? input.xunleiUrl.trim() : DEFAULT_SETTINGS.xunleiUrl,
-    downloadPath:
-      typeof input.downloadPath === 'string' ? input.downloadPath.trim() : DEFAULT_SETTINGS.downloadPath,
+    downloadPaths: effectivePaths,
+    // 默认位置恒为列表首项：发送链路全部读该字段，多位置只是在其上提供发送时覆盖
+    downloadPath: effectivePaths[0] ?? '',
     downloadMode: input.downloadMode === 'immediate' ? 'immediate' : 'confirm',
     sendMode: input.sendMode === 'api' ? 'api' : 'dom',
     reloadBeforeSend: booleanOrDefault(input.reloadBeforeSend, DEFAULT_SETTINGS.reloadBeforeSend),

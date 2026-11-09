@@ -46,6 +46,44 @@ export interface ConfirmPath {
   id: string;
   path: string;
   name: string;
+  /** 设置里保存的下载位置（候选置顶展示） */
+  pinned?: boolean;
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.length > 1 ? value.replace(/\/+$/, '') : value;
+}
+
+/**
+ * 确认窗口的目录候选合并：已解析到 Id 的配置位置置顶（pinned），
+ * 迅雷登记根随后；按 Id 与路径双重去重（同一目录只出现一次），
+ * 当前生效目录不在两者中时兜底追加。纯函数，可直接单测。
+ */
+export function buildConfirmPaths(
+  resolvedConfigured: Array<{ path: string; id: string } | null>,
+  deviceRoots: ConfirmPath[],
+  parentFolderId: string,
+  effectivePath: string,
+): ConfirmPath[] {
+  const paths: ConfirmPath[] = [];
+  const push = (item: ConfirmPath) => {
+    if (!item.id || !item.path) return;
+    if (paths.some((existing) => existing.id === item.id || existing.path === item.path)) return;
+    paths.push(item);
+  };
+  for (const resolved of resolvedConfigured) {
+    if (!resolved?.id || !resolved.path) continue;
+    const path = trimTrailingSlash(resolved.path);
+    push({ id: resolved.id, path, name: path.split('/').filter(Boolean).pop() || path, pinned: true });
+  }
+  for (const root of deviceRoots) {
+    push({ id: root.id, path: trimTrailingSlash(root.path), name: root.name });
+  }
+  if (parentFolderId && effectivePath) {
+    const path = trimTrailingSlash(effectivePath);
+    push({ id: parentFolderId, path, name: path.split('/').filter(Boolean).pop() || path });
+  }
+  return paths;
 }
 
 export interface PendingConfirmation {

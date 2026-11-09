@@ -14,6 +14,8 @@
  *   不要新增"通用 request 透传"给上层拼路径。
  */
 
+import type { DirItem } from './xunleiAutomation';
+
 const TOKEN_SESSION_KEY = 'nas_xunlei_pan_auth';
 /** 提前刷新窗口，避免卡在过期边界 */
 const TOKEN_REFRESH_SKEW_SECONDS = 120;
@@ -124,8 +126,8 @@ export interface XunleiFileParams {
   RealPath?: string;
   AliasPath?: string;
   category_id?: string;
-  /** 目录是否可写，注意是字符串 "true"/"false" */
-  is_write?: string;
+  /** 目录是否可写，线上为字符串 "true"/"false"，注入侧实测需兼容布尔，统一按两者处理 */
+  is_write?: string | boolean;
   default?: string;
   /** 磁盘余量相关，字节 */
   usage?: string;
@@ -460,6 +462,55 @@ export function listFiles(
       with: params.with,
     },
   });
+}
+
+function normalizeDirPath(value: string): string {
+  const parts = (value || '').trim().replace(/\\/g, '/').split('/').filter(Boolean);
+  return `/${parts.join('/')}`;
+}
+
+/**
+ * 把 drive/v1/files 的返回映射为目录树条目（与页面注入 list-dir 同语义）：
+ * 只保留目录（kind=drive#folder），RealPath 优先、缺失时用父路径拼接，
+ * is_write 为 false（布尔或字符串）视为不可写。
+ */
+export function filesToDirItems(files: XunleiFile[] | undefined, parentPath: string): DirItem[] {
+  const items: DirItem[] = [];
+  for (const file of files ?? []) {
+    if ((file.kind ?? '') !== 'drive#folder') continue;
+    const id = String(file.id ?? '');
+    const name = String(file.name ?? '');
+    if (!id || !name) continue;
+    const realPath =
+      String(file.params?.RealPath ?? '').trim() ||
+      `${parentPath.replace(/\/+$/, '')}/${name}`;
+    const writable = !(file.params?.is_write === false || file.params?.is_write === 'false');
+    items.push({ id, name, path: normalizeDirPath(realPath), realPath, writable });
+  }
+  return items;
+}
+
+/**
+ * 设备已登记的下载根目录（device/download_paths）映射为目录树根层。
+ * 迅雷可能重复登记同一路径（线上实测 [av,旧,av]），按 Id 与路径双重去重。
+ */
+export function downloadPathsToDirItems(entries: DownloadPathEntry[] | undefined): DirItem[] {
+  const items: DirItem[] = [];
+  for (const entry of entries ?? []) {
+    const id = String(entry?.Id ?? '');
+    const rawPath = String(entry?.RealPath ?? entry?.FileName ?? '');
+    const path = normalizeDirPath(rawPath);
+    if (!id || path === '/') continue;
+    if (items.some((item) => item.id === id || item.path === path)) continue;
+    items.push({
+      id,
+      name: String(entry?.FileName ?? '') || path.split('/').filter(Boolean).pop() || path,
+      path,
+      realPath: path,
+      writable: true,
+    });
+  }
+  return items;
 }
 
 export interface ListTasksResult {

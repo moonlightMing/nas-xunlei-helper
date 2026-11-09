@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildConfirmCreateSpecs,
+  buildConfirmPaths,
   buildConfirmTree,
   collectTreeNodeFileIds,
   type ConfirmFile,
@@ -165,5 +166,49 @@ describe('buildConfirmCreateSpecs', () => {
       { link: BT_TASK.link, include: true, selectedIds: ['a', 'hacked'] },
     ]);
     expect(plan.specs[0]?.subFileIndex).toBe('0');
+  });
+});
+
+describe('buildConfirmPaths（确认窗口目录候选）', () => {
+  const root = (id: string, path: string, name = path): { id: string; path: string; name: string } => ({
+    id,
+    path,
+    name,
+  });
+
+  it('配置位置置顶且 pinned，登记根随后；按 Id 与路径双重去重', () => {
+    const paths = buildConfirmPaths(
+      [
+        { path: '/downloads/05/', id: 'd992' }, // 尾斜杠归一
+        null, // 解析失败的配置项跳过
+        { path: '/downloads', id: 'dup-of-root' }, // 与登记根同路径 → 登记根被去重
+      ],
+      [root('d992', '/downloads/05'), root('5431', '/downloads'), root('root3', '/vol1/media')],
+      '',
+      '',
+    );
+    expect(paths).toEqual([
+      { id: 'd992', path: '/downloads/05', name: '05', pinned: true },
+      { id: 'dup-of-root', path: '/downloads', name: 'downloads', pinned: true },
+      { id: 'root3', path: '/vol1/media', name: '/vol1/media' }, // 登记根中同路径的两条（d992/5431）均被去重
+    ]);
+  });
+
+  it('当前生效目录不在任何候选中时兜底追加', () => {
+    const paths = buildConfirmPaths(
+      [{ path: '/downloads/05', id: 'd992' }],
+      [root('5431', '/downloads')],
+      'deep-1',
+      '/downloads/05/sub',
+    );
+    expect(paths.map((item) => item.id)).toEqual(['d992', '5431', 'deep-1']);
+    const fallback = paths[2];
+    expect(fallback?.path).toBe('/downloads/05/sub');
+    expect(fallback?.pinned).toBeUndefined();
+  });
+
+  it('全空输入返回空列表，不产生占位项', () => {
+    expect(buildConfirmPaths([], [], '', '')).toEqual([]);
+    expect(buildConfirmPaths([null, null], [], '', '')).toEqual([]);
   });
 });

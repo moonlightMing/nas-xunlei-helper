@@ -46,6 +46,56 @@ describe('normalizeSettings 回落方向', () => {
   });
 });
 
+describe('downloadPaths 多下载位置', () => {
+  it('旧数据只有 downloadPath 时迁移为单元素列表，downloadPath 投影为列表首项', async () => {
+    const { mod } = await loadSettingsModule({
+      nas_xunlei_settings: { xunleiUrl: 'http://nas', downloadPath: '/downloads/05' },
+    });
+    const settings = await mod.ensureSettingsLoaded();
+    expect(settings.downloadPaths).toEqual(['/downloads/05']);
+    expect(settings.downloadPath).toBe('/downloads/05'); // 发送链路继续读首项作默认
+  });
+
+  it('downloadPaths 归一：trim、去空、去重保序；downloadPath 始终投影首项', async () => {
+    const { mod } = await loadSettingsModule({
+      nas_xunlei_settings: {
+        xunleiUrl: 'http://nas',
+        downloadPaths: ['  /downloads/05 ', '', '/downloads/04', '/downloads/05', '  '],
+      },
+    });
+    const settings = await mod.ensureSettingsLoaded();
+    expect(settings.downloadPaths).toEqual(['/downloads/05', '/downloads/04']);
+    expect(settings.downloadPath).toBe('/downloads/05');
+  });
+
+  it('非字符串项被剔除；列表清空时 downloadPath 投影为空（回退迅雷默认目录）', async () => {
+    const { mod } = await loadSettingsModule({
+      nas_xunlei_settings: { xunleiUrl: 'http://nas', downloadPaths: [42, null, '/ok'] },
+    });
+    expect((await mod.ensureSettingsLoaded()).downloadPaths).toEqual(['/ok']);
+
+    const { mod: cleared } = await loadSettingsModule({
+      nas_xunlei_settings: { xunleiUrl: 'http://nas', downloadPaths: [], downloadPath: '' },
+    });
+    const settings = await cleared.ensureSettingsLoaded();
+    expect(settings.downloadPaths).toEqual([]);
+    expect(settings.downloadPath).toBe('');
+  });
+
+  it('downloadPaths 非空时优先于旧 downloadPath 字段（新数据为准）', async () => {
+    const { mod } = await loadSettingsModule({
+      nas_xunlei_settings: {
+        xunleiUrl: 'http://nas',
+        downloadPath: '/legacy',
+        downloadPaths: ['/downloads/01', '/downloads/02'],
+      },
+    });
+    const settings = await mod.ensureSettingsLoaded();
+    expect(settings.downloadPaths).toEqual(['/downloads/01', '/downloads/02']);
+    expect(settings.downloadPath).toBe('/downloads/01');
+  });
+});
+
 describe('ensureSettingsLoaded 失败重试', () => {
   it(
     '读取失败不永久缓存默认值：下次调用会重试并读到真实设置',

@@ -107,7 +107,9 @@ export async function openXunleiTab(
   const existing = await findXunleiTab(url);
 
   if (existing?.id != null) {
-    await focusTab(existing);
+    // activate: false 表示后台复用（如目录树读取），不聚焦窗口也不激活标签页，
+    // 否则用户在设置页每展开一个目录就会被拽到迅雷页面
+    if (activate) await focusTab(existing);
     let current = existing;
     if ((existing.url ?? '') !== url) {
       current = (await chrome.tabs.update(existing.id, { url, active: activate })) ?? existing;

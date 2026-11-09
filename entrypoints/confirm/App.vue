@@ -75,7 +75,11 @@ const stateOf = (index: number): TaskState =>
 const isSingle = computed(() => pending.value?.tasks.length === 1);
 
 const pathOptions = computed(() =>
-  (pending.value?.paths ?? []).map((item) => ({ label: item.path, value: item.id })),
+  (pending.value?.paths ?? []).map((item) => ({
+    // 设置里保存的位置加星标，与迅雷登记根区分
+    label: item.pinned ? `★ ${item.path}` : item.path,
+    value: item.id,
+  })),
 );
 
 const sizeText = (value: number): string => (value > 0 ? formatFileSize(value) : '0 B');

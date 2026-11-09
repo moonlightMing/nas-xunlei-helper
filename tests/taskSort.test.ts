@@ -7,6 +7,7 @@ import {
   nextTaskSortPreferenceMap,
   normalizeTaskSortPreference,
   normalizeTaskSortPreferenceMap,
+  filterTasks,
   sortTasks,
   TASK_SORT_FIELDS_BY_SCOPE,
   taskSortLabel,
@@ -222,5 +223,65 @@ describe('标签', () => {
     expect(taskSortMenuLabel('speed', DEFAULT_TASK_SORT)).toBe('速度 ↓');
     expect(taskSortMenuLabel('speed', { field: 'speed', dir: 'asc' })).toBe('速度 ↑');
     expect(taskSortMenuLabel('name', DEFAULT_TASK_SORT)).toBe('名称 ↑');
+  });
+});
+
+describe('filterTasks', () => {
+  const tasks = [
+    task({ id: 'a', name: 'Blender.Open.Movie', realPath: '/downloads/movies' }),
+    task({ id: 'b', name: 'Sintel', realPath: '/downloads/series' }),
+    task({ id: 'c', name: '纪录片', realPath: '/downloads/纪录片' }),
+    task({ id: 'd', name: 'Sintel.2', realPath: '' }),
+  ];
+
+  it('空关键词与纯空白返回全部任务的浅拷贝，不改入参', () => {
+    const input = [...tasks];
+    expect(filterTasks(input, '')).toEqual(tasks);
+    expect(filterTasks(input, '   ')).toEqual(tasks);
+    expect(filterTasks(input, '')).not.toBe(input);
+    expect(input).toHaveLength(4);
+  });
+
+  it('任务名命中不区分大小写', () => {
+    expect(filterTasks(tasks, 'sintel').map((t) => t.id)).toEqual(['b', 'd']);
+    expect(filterTasks(tasks, 'BLENDER').map((t) => t.id)).toEqual(['a']);
+  });
+
+  it('保存路径命中：名称不含关键词的任务也能通过路径找到', () => {
+    expect(filterTasks(tasks, 'series').map((t) => t.id)).toEqual(['b']);
+    expect(filterTasks(tasks, '/downloads').map((t) => t.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('关键词两端空白先去除再匹配', () => {
+    expect(filterTasks(tasks, '  sintel  ').map((t) => t.id)).toEqual(['b', 'd']);
+  });
+
+  it('无命中返回空数组', () => {
+    expect(filterTasks(tasks, '不存在')).toEqual([]);
+  });
+});
+
+describe('filterTasks 状态过滤', () => {
+  const tasks = [
+    task({ id: 'a', name: 'Blender', phase: 'PHASE_TYPE_RUNNING' }),
+    task({ id: 'b', name: 'Sintel', phase: 'PHASE_TYPE_PENDING' }),
+    task({ id: 'c', name: 'Sintel.2', phase: 'PHASE_TYPE_ERROR' }),
+    task({ id: 'd', name: '纪录片', phase: 'PHASE_TYPE_PAUSED' }),
+  ];
+
+  it('按状态精确过滤', () => {
+    expect(filterTasks(tasks, '', 'PHASE_TYPE_ERROR').map((t) => t.id)).toEqual(['c']);
+    expect(filterTasks(tasks, '', 'PHASE_TYPE_RUNNING').map((t) => t.id)).toEqual(['a']);
+    expect(filterTasks(tasks, '   ', 'PHASE_TYPE_PENDING').map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('关键词与状态同时生效（AND）', () => {
+    expect(filterTasks(tasks, 'sintel', 'PHASE_TYPE_ERROR').map((t) => t.id)).toEqual(['c']);
+    expect(filterTasks(tasks, 'sintel', 'PHASE_TYPE_RUNNING')).toEqual([]);
+    expect(filterTasks(tasks, 'blender', 'PHASE_TYPE_ERROR')).toEqual([]);
+  });
+
+  it('空状态串不过滤，等价于仅关键词', () => {
+    expect(filterTasks(tasks, 'sintel', '').map((t) => t.id)).toEqual(['b', 'c']);
   });
 });

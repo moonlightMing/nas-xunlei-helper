@@ -9,7 +9,14 @@ export type SendSource = 'popup' | 'context-menu' | 'retry' | 'history';
 export interface SendLinksMessage {
   type: 'download';
   action: 'sendLinks';
-  data: { links: string[]; source?: SendSource; /** 忽略重复资源防呆，强制重发 */ force?: boolean };
+  data: {
+    links: string[];
+    source?: SendSource;
+    /** 忽略重复资源防呆，强制重发 */
+    force?: boolean;
+    /** 本次发送使用的下载位置（NAS 路径），覆盖设置中的默认位置 */
+    downloadPath?: string;
+  };
 }
 
 export type SendLinksResponse = SendOutcome;
@@ -58,6 +65,8 @@ export interface ListDirResponse {
   items: DirItem[];
   code?: SendErrorCode;
   message?: string;
+  /** 目录读取通道：api=接口直连（不打开迅雷页面），dom=后台复用迅雷标签页 */
+  via?: 'api' | 'dom';
 }
 
 export interface ReadDialogFilesMessage {

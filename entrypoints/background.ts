@@ -50,12 +50,14 @@ import {
   readTaskState,
   readXunleiFileList,
   runSendFlow,
+  type DirItem,
   type PageProbe,
   type PathApplied,
   type SendOutcome,
 } from '@/utils/xunleiAutomation';
 import {
   buildConfirmCreateSpecs,
+  buildConfirmPaths,
   createConfirmId,
   deletePendingConfirmation,
   findPendingByWindowId,
@@ -71,9 +73,12 @@ import {
 import {
   createTask,
   deleteTasks,
+  downloadPathsToDirItems,
   fetchDownloadPaths,
+  filesToDirItems,
   flattenResourceFiles,
   getDeviceSpace,
+  listFiles,
   listTasks,
   operateTask,
   parseResources,
@@ -115,6 +120,13 @@ interface SendOptions {
   notify: boolean;
   source: SendSource;
   force?: boolean;
+  /** 本次发送使用的下载位置（弹窗/确认窗口选择），留空用设置中的默认位置（列表首项） */
+  downloadPath?: string;
+}
+
+/** 本次发送实际使用的下载位置：发送时选择优先，否则回落设置默认（列表首项） */
+function effectiveDownloadPath(settings: XunleiSettings, options: SendOptions): string {
+  return options.downloadPath?.trim() || settings.downloadPath;
 }
 
 let activeSend: Promise<SendOutcome> | null = null;
@@ -298,6 +310,7 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
       notify: true,
       source: message.data.source ?? 'popup',
       force: message.data.force,
+      downloadPath: message.data.downloadPath,
     });
   }
   if (message.type === 'xunlei') {
@@ -715,7 +728,7 @@ async function resolveApiContext(
     };
   }
 
-  const configuredPath = settings.downloadPath.trim();
+  const configuredPath = effectiveDownloadPath(settings, options).trim();
   const needed = Boolean(configuredPath);
   let parentFolderId = '';
   let pathApplied: PathApplied = { needed, applied: !needed };
@@ -975,10 +988,27 @@ async function analyzeApiLinks(
 async function loadConfirmPaths(
   xunleiUrl: string,
   space: string,
-  configuredPath: string,
+  configuredPaths: string[],
   parentFolderId: string,
+  effectivePath: string,
 ): Promise<ConfirmPath[]> {
-  const paths: ConfirmPath[] = [];
+  // 设置里保存的下载位置逐个解析目录 Id（串行，避免打开确认窗口时对 NAS 突发请求）；
+  // 单条解析失败/目录缺失只跳过该条，不影响其它候选
+  const resolvedConfigured: Array<{ path: string; id: string } | null> = [];
+  for (const path of configuredPaths) {
+    if (!path.trim()) {
+      resolvedConfigured.push(null);
+      continue;
+    }
+    try {
+      const resolved = await resolveFolderIdByPath(xunleiUrl, space, path.trim());
+      resolvedConfigured.push(resolved.missing ? null : { path: path.trim(), id: resolved.id });
+    } catch {
+      resolvedConfigured.push(null);
+    }
+  }
+
+  const deviceRoots: ConfirmPath[] = [];
   try {
     const entries = await fetchDownloadPaths(xunleiUrl, space);
     for (const entry of entries ?? []) {
@@ -988,20 +1018,13 @@ async function loadConfirmPaths(
       const rawPath = String(record.RealPath ?? params.RealPath ?? record.FileName ?? '');
       const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
       const name = String(record.FileName ?? path);
-      if (!id || !path || paths.some((item) => item.id === id)) continue;
-      paths.push({ id, path, name });
+      if (!id || !path) continue;
+      deviceRoots.push({ id, path, name });
     }
   } catch (error) {
     console.warn('[background] 读取迅雷下载目录失败:', error);
   }
-  if (parentFolderId && configuredPath && !paths.some((item) => item.id === parentFolderId)) {
-    paths.unshift({
-      id: parentFolderId,
-      path: configuredPath.length > 1 ? configuredPath.replace(/\/+$/, '') : configuredPath,
-      name: configuredPath.split('/').filter(Boolean).pop() || configuredPath,
-    });
-  }
-  return paths;
+  return buildConfirmPaths(resolvedConfigured, deviceRoots, parentFolderId, effectivePath);
 }
 
 /** 确认窗口所需的精简任务视图，不包含接口令牌与设置 */
@@ -1055,12 +1078,13 @@ async function prepareApiConfirmation(
 
   const { tasks, matchSummary, matchText } = analyzed.analysis;
   const confirmTasks = tasks.map(toConfirmTask);
-  const configuredPath = settings.downloadPath.trim();
+  const configuredPath = effectiveDownloadPath(settings, options).trim();
   const paths = await loadConfirmPaths(
     settings.xunleiUrl,
     context.space,
-    configuredPath,
+    settings.downloadPaths,
     context.parentFolderId,
+    configuredPath,
   );
   const parentFolderId = context.parentFolderId || paths[0]?.id || '';
   const displayConfigured =
@@ -1520,7 +1544,7 @@ async function runSend(
     source: options.source,
     links,
     mode: settings.downloadMode,
-    path: settings.downloadPath,
+    path: effectiveDownloadPath(settings, options),
   });
 
   if (settings.sendMode === 'api') {
@@ -1639,7 +1663,7 @@ async function runSend(
   try {
     outcome = await runSendFlow(tab.id, {
       links,
-      downloadPath: settings.downloadPath,
+      downloadPath: effectiveDownloadPath(settings, options),
       mode: settings.downloadMode,
       match: settings.avMatch,
     });
@@ -1846,15 +1870,37 @@ async function testConnection(
   return { ok: !failed, checks, code: failed?.code, message: failed?.detail };
 }
 
+/**
+ * 接口直连读取目录树：全程在 Service Worker 内完成，不打开迅雷标签页。
+ * 根层用 device/download_paths（与确认窗口的目录下拉同源），
+ * 子层用 drive/v1/files 下钻；目录 Id 两处同一套（线上已确认）。
+ * 任何失败都由调用方回退页面读取，这里只返回 null。
+ */
+async function listDirViaApi(
+  url: string,
+  parentId?: string,
+  parentPath?: string,
+): Promise<DirItem[] | null> {
+  try {
+    const space = await getDeviceSpace(url);
+    if (!parentId) {
+      const entries = await fetchDownloadPaths(url, space);
+      const items = downloadPathsToDirItems(entries);
+      return items; // 空列表也是真实结果（迅雷未登记下载目录），不触发回退
+    }
+    const result = await listFiles(url, { space, parentId, limit: 200 });
+    return filesToDirItems(result.files, parentPath ?? '');
+  } catch (error) {
+    console.warn('[background] 目录接口直连失败，回退页面读取:', error);
+    return null;
+  }
+}
+
 async function listDir(
   url: string,
   parentId?: string,
   parentPath?: string,
 ): Promise<ListDirResponse> {
-  // 读取目录会导航/复用发送正在使用的迅雷标签页，与发送互斥
-  if (await isSendBusy()) {
-    return { ok: false, items: [], code: 'busy', message: '正在发送任务，请稍后再试' };
-  }
   const urlError = validateXunleiUrl(url);
   if (urlError) {
     return {
@@ -1865,9 +1911,19 @@ async function listDir(
     };
   }
 
+  // 优先接口直连：纯只读、不碰标签页，也不需要与发送互斥
+  const viaApi = await listDirViaApi(url, parentId, parentPath);
+  if (viaApi) return { ok: true, items: viaApi, via: 'api' };
+
+  // 回退页面读取：会导航/复用发送正在使用的迅雷标签页，与发送互斥
+  if (await isSendBusy()) {
+    return { ok: false, items: [], code: 'busy', message: '正在发送任务，请稍后再试' };
+  }
+
   let tab: chrome.tabs.Tab;
   try {
-    tab = await openXunleiTab(url, { reload: false, activate: true });
+    // 后台复用/打开，不激活标签页，避免把用户从设置页拽到迅雷页面
+    tab = await openXunleiTab(url, { reload: false, activate: false });
   } catch (error) {
     return {
       ok: false,
@@ -1891,7 +1947,8 @@ async function listDir(
     };
   }
 
-  return listXunleiDir(tab.id, parentId, parentPath);
+  const result = await listXunleiDir(tab.id, parentId, parentPath);
+  return result.ok ? { ...result, via: 'dom' } : result;
 }
 
 /** 目录读取只依赖 Vuex 登录态，不要求「新建任务」按钮可见 */

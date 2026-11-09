@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteTasks,
+  downloadPathsToDirItems,
+  filesToDirItems,
   flattenResourceFiles,
   invalidatePanAuth,
   listTasks,
@@ -203,5 +205,131 @@ describe('xunleiRequest 请求格式（fetch 拦截断言）', () => {
         phase: 'PHASE_TYPE_COMPLETE',
       }),
     ).toThrow(/不支持的任务操作状态/);
+  });
+});
+
+describe('filesToDirItems（目录树映射）', () => {
+  it('只保留目录，RealPath 优先、缺失时按父路径拼接，is_write 字符串/布尔 false 均不可写', () => {
+    const items = filesToDirItems(
+      [
+        {
+          kind: 'drive#file',
+          id: 'f1',
+          parent_id: 'p',
+          name: 'movie.mp4',
+        },
+        {
+          kind: 'drive#folder',
+          id: 'd1',
+          parent_id: 'p',
+          name: '电影',
+          params: { RealPath: '/vol1/1000/电影/', is_write: 'false' },
+        },
+        {
+          kind: 'drive#folder',
+          id: 'd2',
+          parent_id: 'p',
+          name: '剧集',
+        },
+        {
+          kind: 'drive#folder',
+          id: 'd3',
+          parent_id: 'p',
+          name: '只读目录',
+          params: { is_write: false },
+        },
+      ],
+      '/vol1/1000',
+    );
+    expect(items).toEqual([
+      {
+        id: 'd1',
+        name: '电影',
+        path: '/vol1/1000/电影',
+        realPath: '/vol1/1000/电影/',
+        writable: false,
+      },
+      {
+        id: 'd2',
+        name: '剧集',
+        path: '/vol1/1000/剧集',
+        realPath: '/vol1/1000/剧集',
+        writable: true,
+      },
+      {
+        id: 'd3',
+        name: '只读目录',
+        path: '/vol1/1000/只读目录',
+        realPath: '/vol1/1000/只读目录',
+        writable: false,
+      },
+    ]);
+  });
+
+  it('undefined 或缺 id/name 的条目被剔除，不抛错', () => {
+    expect(filesToDirItems(undefined, '/x')).toEqual([]);
+    expect(
+      filesToDirItems(
+        [
+          { kind: 'drive#folder', id: '', parent_id: '', name: 'no-id' },
+          { kind: 'drive#folder', id: 'ok', parent_id: '', name: '' },
+        ],
+        '',
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('downloadPathsToDirItems（下载根目录映射）', () => {
+  it('按 Id 与路径双重去重，路径去尾斜杠归一', () => {
+    const items = downloadPathsToDirItems([
+      {
+        Id: 'd992',
+        ParentID: '',
+        FileName: 'av',
+        RealPath: '/vol1/1000/视频/av/',
+        Kind: 'DOWNLOAD',
+      },
+      {
+        Id: '5431',
+        ParentID: '',
+        FileName: 'downloads',
+        RealPath: '/var/apps/xunlei/shares/downloads',
+        Kind: 'DOWNLOAD',
+      },
+      // 线上实测同一路径会重复登记：同 Id 同 RealPath，或同 RealPath 不同 Id
+      {
+        Id: 'd992',
+        ParentID: '',
+        FileName: 'av',
+        RealPath: '/vol1/1000/视频/av/',
+        Kind: 'DOWNLOAD',
+      },
+      {
+        Id: 'dup-path',
+        ParentID: '',
+        FileName: 'av 别名',
+        RealPath: '/vol1/1000/视频/av',
+        Kind: 'DOWNLOAD',
+      },
+    ]);
+    expect(items.map((item) => item.id)).toEqual(['d992', '5431']);
+    expect(items[0]).toEqual({
+      id: 'd992',
+      name: 'av',
+      path: '/vol1/1000/视频/av',
+      realPath: '/vol1/1000/视频/av',
+      writable: true,
+    });
+  });
+
+  it('空列表或根路径条目被剔除', () => {
+    expect(downloadPathsToDirItems(undefined)).toEqual([]);
+    expect(
+      downloadPathsToDirItems([
+        { Id: 'x', ParentID: '', FileName: '', RealPath: '/', Kind: 'DOWNLOAD' },
+        { Id: '', ParentID: '', FileName: 'y', RealPath: '/y', Kind: 'DOWNLOAD' },
+      ]),
+    ).toEqual([]);
   });
 });

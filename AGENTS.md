@@ -105,27 +105,28 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `entrypoints/background.ts` | 右键菜单、消息路由、发送编排、并发锁、预检、通知动作、任务监控 alarm、只读文件树诊断 |
+| `entrypoints/background.ts` | 右键菜单、消息路由、发送编排、并发锁、预检、通知动作、任务监控 alarm、只读文件树诊断、目录树读取（接口直连优先，页面注入回退且不激活标签页） |
 | `utils/settings.ts` | 设置默认值、校验、`chrome.storage.local` 单 key 读写、跨上下文监听；含通知/监控/刷新开关与 `avMatch` |
 | `utils/avMatch.ts` | 番号识别/归一化、文件类型分类、自动/手动匹配、排序上限、`MatchPlan/MatchSummary`、配置归一化 |
 | `utils/links.ts` | 链接提取、去重、协议校验（http(s)/magnet/thunder/ed2k） |
 | `utils/sendErrors.ts` | 错误码、用户提示、通知主动作、重试资格、注入异常分类 |
 | `utils/messaging.ts` | popup/options/background 共享的消息与响应类型 |
-| `utils/xunleiTab.ts` | 迅雷标签页查找、打开/复用、聚焦、加载等待（5 秒轮询保活） |
+| `utils/clipboard.ts` | 扩展页面点击复制文本到剪贴板并提示（popup 任务名点击复制共用） |
+| `utils/xunleiTab.ts` | 迅雷标签页查找、打开/复用、聚焦、加载等待（5 秒轮询保活）；`activate: false` 时后台复用/新建，不聚焦窗口也不激活标签页 |
 | `utils/xunleiAutomation.ts` | 迅雷页面选择器、步骤注入、错误/登录识别、路径解析、目录列表、任务读取、BT 文件树只读/应用 |
-| `utils/xunleiApi.ts` | 接口模式客户端：`uiauth` 令牌提取与缓存、`drive/v1` 调用、解析/拍平/`sub_file_index` 编码、目录与任务读写 |
+| `utils/xunleiApi.ts` | 接口模式客户端：`uiauth` 令牌提取与缓存、`drive/v1` 调用、解析/拍平/`sub_file_index` 编码、目录与任务读写、目录树条目映射（`filesToDirItems`/`downloadPathsToDirItems` 纯函数，供 `listDir` 接口直连用） |
 | `utils/confirm.ts` | 接口模式确认窗口：待确认任务 `storage.session` 读写、文件树还原、勾选→`sub_file_index` 的纯函数 |
 | `entrypoints/confirm/` | 自绘的确认下载窗口（Vue）：文件勾选/文件夹级三态勾选/仅选中此项/扩展名筛选、任务名编辑、下载目录、提交与取消 |
 | `utils/history.ts` | 发送记录、监控摘要回写、中断标记、清空与监听 |
 | `utils/notifications.ts` | 固定通知 ID、按钮动作、发送/任务通知策略 |
 | `utils/taskMonitor.ts` | 任务监控 session、1 分钟 alarm、状态比对、合并通知 |
 | `utils/badge.ts` | 工具栏图标任务数角标：数量文本纯函数（>99 折叠 `99+`）、原生 setBadgeText + 小主体留白图标、独立常驻刷新 alarm、开关/地址变化同步清空 |
-| `utils/taskSort.ts` | popup 任务列表排序纯函数：按页签字段/方向偏好、菜单点击转移、存储读回归一化（含旧格式迁移）、标签、稳定排序 |
+| `utils/taskSort.ts` | popup 任务列表排序与搜索过滤纯函数：按页签字段/方向偏好、菜单点击转移、存储读回归一化（含旧格式迁移）、标签、关键词与状态过滤（`filterTasks`，任务名/路径不区分大小写 + phase 精确匹配，AND 叠加）、稳定排序 |
 | `utils/popupFit.ts` | 弹窗被浏览器限高时把 `#app` 钉到视口高度，让列表压缩到可见空间内滚动（仅在文档真实溢出时写入样式） |
 | `entrypoints/options/` | 控制面板：设置、番号匹配、测试连接、目录树、发送记录、引导 |
 | `entrypoints/options/components/` | `AvMatchPanel.vue` 配置表单、`AvMatchPreview.vue` 只读规则预览 |
 | `entrypoints/popup/` | 工具栏弹窗：`a-tabs` 双页外壳（下载任务 / 发送链接）、打开设置与迅雷 |
-| `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除、批量全部开始/全部暂停（`operate-all`，总速度上抛 App 页签行显示）、两页签任务排序（`utils/taskSort.ts`，偏好存 `nas_xunlei_task_sort`）、「失败」标签悬停显示失败原因；`SendPanel.vue` 链接解析去重与发送结果动作 |
+| `entrypoints/popup/components/` | `TasksPanel.vue` 任务列表与进度/速度轮询、暂停/继续/删除、批量全部开始/全部暂停（`operate-all`，总速度上抛 App 页签行显示）、两页签任务排序（`utils/taskSort.ts`，偏好存 `nas_xunlei_task_sort`）、「失败」标签悬停显示失败原因、任务名点击复制、搜索框按任务名/路径即时过滤（关键词不持久化，弹窗关闭即失），「进行中」页签另有状态下拉筛选（下载中/等待中/已暂停/失败，与关键词叠加，切页签保留选择）；`SendPanel.vue` 链接解析去重与发送结果动作 |
 | `scripts/deploy.mjs` | 本地构建与调试浏览器部署 |
 | `scripts/generate-icons.mjs` | 图标生成：assets/icon.svg（矢量源）经 resvg 渲染成 public/icons 的 16/32/48/128 PNG；`CONTENT_RATIO` 控制主体留白（留白是给原生角标数字的，勿改小） |
 | `assets/icon.svg` | 扩展图标矢量源（主体满幅设计，留白由生成脚本注入）；改图标设计只改这个文件，跑 `pnpm icons` 或任意 build |
@@ -143,7 +144,7 @@
 
 开启番号匹配时，`runSendFlow` 在 `wait-dialog` 后插入只读 `read-file-list`（拍平 BT 文件树）→ 后台用 `utils/avMatch.ts` 计算计划 → `apply-file-selection`（调用面板树组件 `setCheckedKeys`）应用勾选；立即模式最后点击「立即下载」（`skipPath=1`，避免重复改 Vuex 路径）。严格模式任一任务未匹配/文件树异常时不点击并返回 `paused`；回退模式保留未匹配任务原勾选继续。非 BT 直链跳过匹配。
 
-最后更新历史 → 发送通知 → 按需 `startMonitor()`。每步单独注入，元素等待超时 10 秒（`STEP_TIMEOUT_MS`），磁力解析结果等待放宽到 45 秒（`PARSE_WAIT_TIMEOUT_MS`，DHT 拉元数据远慢于普通步骤）。整条发送链路有互斥：内存锁 + `storage.session` 的 `nas_xunlei_send_lock`（SW 重启后按时间戳判断孤儿），总超时 5 分钟后释放锁并返回超时结果。诊断入口（测试连接/读目录/读弹窗文件树）与发送共用该互斥。
+最后更新历史 → 发送通知 → 按需 `startMonitor()`。每步单独注入，元素等待超时 10 秒（`STEP_TIMEOUT_MS`），磁力解析结果等待放宽到 45 秒（`PARSE_WAIT_TIMEOUT_MS`，DHT 拉元数据远慢于普通步骤）。整条发送链路有互斥：内存锁 + `storage.session` 的 `nas_xunlei_send_lock`（SW 重启后按时间戳判断孤儿），总超时 5 分钟后释放锁并返回超时结果。诊断入口中测试连接/读弹窗文件树与发送共用该互斥；**读目录（`listDir`）优先接口直连**（`listDirViaApi`：根层 `device/download_paths`、子层 `drive/v1/files` 下钻，纯只读、不碰标签页、不占互斥），接口失败才回退页面注入链路，回退时**后台复用/打开迅雷标签页（`activate: false`，不激活不聚焦）**，此时才检查发送互斥——不要把目录树读取改回激活标签页，那是「从迅雷选择」反复跳页的根源（0.11.1 修）。
 
 ### 错误码与通知
 
@@ -159,6 +160,7 @@
 - `nas_xunlei_history`：发送记录，`storage.local`，上限 50；状态含 `paused`，可带 `match` 摘要（仅计数/最多 3 个番号或任务名，不存完整文件列表）
 - `nas_xunlei_monitor`：活跃监控 session，`storage.local`，上限 5 个 session、每个最多 200 个任务
 - `nas_xunlei_task_sort`：popup 任务列表排序偏好，按页签 `{ing: {field, dir}, done: {field, dir}}`，`storage.local`，读回归一化兼容旧单页签格式；读写失败均静默退化为默认排序；不进 `nas_xunlei_settings`（弹窗 UI 偏好，非功能配置）
+- `nas_xunlei_last_path`：popup「保存到」下拉上次选择的下载位置，`storage.local`；不在 `downloadPaths` 列表中时静默回落默认（列表首项）
 - `nas_xunlei_last_send`：最近发送的链接，`storage.session`，30 分钟过期，用于通知重试
 - `nas_xunlei_notification_actions`：通知按钮动作，`storage.session`
 - `nas_xunlei_pan_auth`：接口模式的 `uiauth` JWT 缓存（含签发地址与 exp），`storage.session`，不落 local/sync
@@ -184,6 +186,7 @@
 - **任务监控只读**：只读取 `drive.all/tasks/tasksDone` 并按需复用 `drive/getTask`；不调用 `fetchTasks` 改写列表，不自行请求 NAS HTTP API；页面关闭不自动重开，停止原因写回发送记录。监控失败不能影响发送结果或 popup 响应。
 - **点击步骤不自动重试**：新建任务、填链接、点击立即下载都有副作用，自动重试可能重复开弹窗或重复建任务；失败由用户通过通知/记录里的「重试」整链重跑。
 - **设置读取顺序**：`getSettings()` 是同步内存读取；使用前先 `await ensureSettingsLoaded()`。保存用 `saveSettings()`，其它上下文通过 `watchSettingsStorage()` 感知变更。存储 key 为 `nas_xunlei_settings`，位于 `storage.local`（不要改成 sync）；通知/监控/刷新开关都在同一 key 内。
+- **多下载位置模型**：`downloadPaths: string[]` 是唯一事实源（归一化 trim/去空/按首现去重），`downloadPath` 恒为其首项的只读投影（旧单值字段做迁移来源，发送链路全部读投影）。popup「保存到」下拉与确认窗口可传 `options.downloadPath` 覆盖默认，background 用 `effectiveDownloadPath(settings, options)` 统一取生效路径——发送链路禁止直接读 `settings.downloadPath` 之外的字段拼路径，也禁止在保存时写入与列表脱钩的 `downloadPath`（会破坏清空列表的语义，见 `buildSavePayload`）。确认窗口候选由 `buildConfirmPaths` 纯函数合并（配置位置置顶 pinned + 迅雷登记根，Id/路径双重去重），配置位置的 Id 在 `loadConfirmPaths` 里逐个 `resolveFolderIdByPath` 串行解析、失败跳过。
 - **右键菜单注册时机**：只在 `onInstalled` 中 `removeAll` 后重建；Service Worker 冷启动不会再触发 `onInstalled`，菜单本身由浏览器持久化，不要每次启动重复创建。菜单 contexts 为 `link/selection/video/audio`，点击时从 `linkUrl`、`srcUrl` 或 `selectionText` 提取链接。
 - **标签页复用**：`findXunleiTab` 去掉 hash 后匹配，优先当前激活页；`openXunleiTab` 复用时会先确保 URL 指向配置地址（含 hash），需要时再 reload；`waitTabComplete` 每 5 秒 `chrome.tabs.get` 轮询，兼顾关闭检测与 Service Worker 保活。
 - **通知动作**：固定 ID 见 `utils/notifications.ts`；按钮动作存入 `storage.session`，Service Worker 重启后仍可点击。重试只读取 30 分钟内保存的 `nas_xunlei_last_send`，过期时提示重新发送，不要自动构造请求。

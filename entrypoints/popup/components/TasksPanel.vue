@@ -2,10 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { message } from 'ant-design-vue';
 import { bytes } from '@/utils/format';
+import { copyText } from '@/utils/clipboard';
 import type { ListTasksResponse, TaskActionResponse, TaskSummary } from '@/utils/messaging';
 import { schedulePopupFit } from '@/utils/popupFit';
 import {
   DEFAULT_TASK_SORT_MAP,
+  filterTasks,
   normalizeTaskSortPreferenceMap,
   nextTaskSortPreferenceMap,
   sortTasks,
@@ -46,6 +48,17 @@ const SORT_STORAGE_KEY = 'nas_xunlei_task_sort';
 
 const scope = ref<'ing' | 'done'>('ing');
 const tasks = ref<TaskSummary[]>([]);
+/** 搜索关键词：按任务名或保存路径过滤，两个页签共用，弹窗关闭即失（不持久化） */
+const keyword = ref('');
+/** 状态筛选：仅「进行中」页签显示（已完成页签全是完成态，筛了无意义）；值保留，切回页签时恢复 */
+const statusFilter = ref<'' | XunleiPhase>('');
+/** 「进行中」页签的状态筛选选项，文案与列表状态标签一致 */
+const STATUS_FILTER_OPTIONS: { label: string; value: XunleiPhase }[] = [
+  { label: '下载中', value: 'PHASE_TYPE_RUNNING' },
+  { label: '等待中', value: 'PHASE_TYPE_PENDING' },
+  { label: '已暂停', value: 'PHASE_TYPE_PAUSED' },
+  { label: '失败', value: 'PHASE_TYPE_ERROR' },
+];
 /** 总速度上抛给 App.vue，显示在「下载任务/发送链接」页签行右侧 */
 const emit = defineEmits<{ (e: 'total-speed', value: number): void }>();
 const sortMap = ref<TaskSortPreferenceMap>({
@@ -53,7 +66,17 @@ const sortMap = ref<TaskSortPreferenceMap>({
   done: { ...DEFAULT_TASK_SORT_MAP.done },
 });
 const scopeSort = computed(() => sortMap.value[scope.value as TaskScope]);
-const displayTasks = computed(() => sortTasks(tasks.value, scopeSort.value));
+const displayTasks = computed(() =>
+  sortTasks(filterTasks(tasks.value, keyword.value, statusFilter.value), scopeSort.value),
+);
+/** 列表被关键词/状态全部滤掉时的空态文案（两者都空时不会走到空态分支） */
+const noMatchText = computed(() => {
+  const kw = keyword.value.trim();
+  const hasStatus = statusFilter.value !== '';
+  if (kw && hasStatus) return `没有匹配「${kw}」且符合状态筛选的任务`;
+  if (kw) return `没有匹配「${kw}」的任务`;
+  return '没有符合状态筛选的任务';
+});
 const sortButtonLabel = computed(() => taskSortLabel(scopeSort.value.field, scopeSort.value.dir));
 const sortFields = computed(() => TASK_SORT_FIELDS_BY_SCOPE[scope.value as TaskScope]);
 const loading = ref(false);
@@ -105,6 +128,11 @@ const messageTone = (phase: string): string => {
 /** 失败任务的悬停原因（迅雷 message 字段原文）；非失败或无内容时不显示 tooltip */
 const failureTip = (task: TaskSummary): string | undefined =>
   task.phase === 'PHASE_TYPE_ERROR' && task.message ? task.message : undefined;
+
+/** 点击任务名复制完整名称（通常即资源名/番号名），便于贴去其它工具查询 */
+const copyTaskName = (task: TaskSummary) => {
+  void copyText(task.name);
+};
 
 /** 进行中页签所有下载中任务的速度之和（字节/秒），等待 / 暂停 / 失败任务不计入 */
 const totalSpeed = computed(() =>
@@ -330,6 +358,37 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
+    <!-- 列表为空时不渲染搜索行：没有可搜的对象，空弹窗也少占一行 -->
+    <div v-if="tasks.length > 0" class="search-row">
+      <a-input
+        v-model:value="keyword"
+        class="search"
+        size="small"
+        placeholder="搜索任务名或路径"
+        allow-clear
+      >
+        <template #prefix>
+          <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" />
+            <path d="M15.8 15.8 20 20" />
+          </svg>
+        </template>
+      </a-input>
+      <!-- 状态筛选只在「进行中」页签出现（已完成页签全是完成态）；
+           clear 时 antd 回传 undefined，归一回空串 -->
+      <a-select
+        v-if="scope === 'ing'"
+        class="status-filter"
+        size="small"
+        :value="statusFilter"
+        :options="STATUS_FILTER_OPTIONS"
+        placeholder="全部状态"
+        allow-clear
+        title="按状态筛选任务"
+        @change="(value: unknown) => (statusFilter = (value as '' | XunleiPhase) ?? '')"
+      />
+    </div>
+
     <a-alert v-if="errorText" type="warning" show-icon class="error">
       <template #message>{{ errorText }}</template>
       <template #description>
@@ -342,6 +401,10 @@ onBeforeUnmount(() => {
       <p v-if="!errorText && !loading && tasks.length === 0" class="empty">
         {{ scope === 'ing' ? '暂无进行中的任务' : '暂无已完成任务' }}
       </p>
+      <!-- 过滤是本地即时计算，有任务但全被关键词/状态滤掉时如实提示（loading/error 期间也成立） -->
+      <p v-else-if="tasks.length > 0 && displayTasks.length === 0" class="empty">
+        {{ noMatchText }}
+      </p>
       <ul v-else class="list">
         <li
           v-for="task in displayTasks"
@@ -350,7 +413,7 @@ onBeforeUnmount(() => {
           :class="{ 'is-complete': task.phase === 'PHASE_TYPE_COMPLETE' }"
         >
           <div class="item-head">
-            <span class="name" :title="task.name">{{ task.name }}</span>
+            <span class="name" :title="`${task.name}（点击复制）`" @click="copyTaskName(task)">{{ task.name }}</span>
             <!-- 失败原因来自迅雷任务的 message 字段，仅在失败且有内容时悬停显示 -->
             <a-tooltip :title="failureTip(task)">
               <span class="status" :class="statusTone(task.phase)">
@@ -494,6 +557,42 @@ onBeforeUnmount(() => {
   animation: act-spin 0.7s linear infinite;
 }
 
+/* 搜索行独占一行：工具栏在超高倍缩放下已经很挤（总速度为此移到页签行），
+   不再把输入框塞进工具栏与前两组争宽；状态筛选贴右，输入框吃剩余宽度 */
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.status-filter {
+  flex: none;
+  width: 86px;
+}
+
+.search :deep(.ant-input-prefix) {
+  margin-inline-end: 6px;
+  color: rgba(0, 0, 0, 0.3);
+}
+
+.search-ico {
+  display: block;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .error {
   margin-bottom: 0;
   flex-shrink: 0;
@@ -568,6 +667,7 @@ onBeforeUnmount(() => {
   font-size: 13px;
   font-weight: 600;
   color: rgba(0, 0, 0, 0.88);
+  cursor: pointer;
 }
 
 .status {

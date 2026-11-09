@@ -1,15 +1,53 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { message } from 'ant-design-vue';
 import { parseLinks } from '@/utils/links';
 import type { SendLinksResponse } from '@/utils/messaging';
 import { getSendErrorMeta } from '@/utils/sendErrors';
+import { ensureSettingsLoaded, getSettings } from '@/utils/settings';
 
 const props = defineProps<{ settingsReady: boolean }>();
 
 const linksText = ref('');
 const sending = ref(false);
 const result = ref<SendLinksResponse | null>(null);
+
+/** 上次发送使用的下载位置（必须是设置里保存过的路径才生效，否则回落默认） */
+const LAST_PATH_KEY = 'nas_xunlei_last_path';
+const downloadPaths = ref<string[]>([]);
+const selectedPath = ref('');
+
+const pathOptions = computed(() =>
+  downloadPaths.value.map((path, index) => ({
+    label: index === 0 ? `${path}（默认）` : path,
+    value: path,
+  })),
+);
+
+onMounted(async () => {
+  await ensureSettingsLoaded();
+  downloadPaths.value = [...getSettings().downloadPaths];
+  let last = '';
+  try {
+    const stored = await chrome.storage.local.get(LAST_PATH_KEY);
+    const value = (stored?.[LAST_PATH_KEY] ?? '') as string;
+    last = typeof value === 'string' ? value : '';
+  } catch {
+    /* 读取失败回落默认位置 */
+  }
+  selectedPath.value = downloadPaths.value.includes(last)
+    ? last
+    : (downloadPaths.value[0] ?? '');
+});
+
+watch(selectedPath, (value) => {
+  if (!value) return;
+  try {
+    void chrome.storage.local.set({ [LAST_PATH_KEY]: value }).catch(() => {});
+  } catch {
+    /* popup 上下文异常时静默放弃记忆 */
+  }
+});
 
 const parsed = computed(() => parseLinks(linksText.value));
 const linkCount = computed(() => parsed.value.links.length);
@@ -71,7 +109,7 @@ const submit = async (force: boolean) => {
     const response = (await chrome.runtime.sendMessage({
       type: 'download',
       action: 'sendLinks',
-      data: { links, source: 'popup', force },
+      data: { links, source: 'popup', force, downloadPath: selectedPath.value || undefined },
     })) as SendLinksResponse | undefined;
     result.value =
       response ?? { stage: 'prepare', ok: false, code: 'unknown', message: '后台无响应，请重试' };
@@ -133,6 +171,17 @@ const handlePrimaryAction = () => {
     <div class="meta">
       <span :class="{ warn: parsed.unsupported.length > 0 || parsed.truncated }">{{ hintText }}</span>
       <span v-if="linkCount" class="shortcut">Ctrl / ⌘ + Enter 发送</span>
+    </div>
+
+    <div v-if="downloadPaths.length" class="path-row">
+      <span class="path-label">保存到</span>
+      <a-select
+        v-model:value="selectedPath"
+        :options="pathOptions"
+        size="small"
+        class="path-select"
+        :disabled="sending"
+      />
     </div>
 
     <a-button
@@ -213,6 +262,24 @@ const handlePrimaryAction = () => {
 .shortcut {
   flex-shrink: 0;
   color: rgba(0, 0, 0, 0.35);
+}
+
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.path-label {
+  flex-shrink: 0;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.path-select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .notice {
