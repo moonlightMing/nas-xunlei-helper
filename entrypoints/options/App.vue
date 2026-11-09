@@ -559,10 +559,9 @@ function monitorText(item: SendHistoryEntry): string {
                       :key="path"
                       :class="{ 'is-default': index === 0 }"
                     >
-                      <span class="path-text" :title="path">
-                        <span v-if="index === 0" class="default-tag">默认</span>{{ path }}
-                      </span>
+                      <span class="path-text" :title="path">{{ path }}</span>
                       <span class="path-actions">
+                        <span v-if="index === 0" class="default-tag">默认</span>
                         <a-button
                           v-if="index > 0"
                           size="small"
@@ -954,13 +953,13 @@ function monitorText(item: SendHistoryEntry): string {
 }
 
 .default-tag {
-  margin-right: 6px;
-  padding: 0 5px;
+  flex-shrink: 0;
+  padding: 0 6px;
   border: 1px solid #91caff;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: inherit;
-  line-height: 18px;
+  line-height: 22px;
   color: #1677ff;
   background: #e6f4ff;
 }

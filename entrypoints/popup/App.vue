@@ -55,12 +55,6 @@ watch(activeTab, () => {
 
 <template>
   <div class="popup">
-    <header class="header">
-      <img src="/icons/48.png" alt="logo" class="logo" />
-      <span class="title">NAS 迅雷助手</span>
-      <span class="version">v{{ version }}</span>
-    </header>
-
     <a-alert v-if="!settingsLoading && !settingsReady" type="warning" show-icon class="notice">
       <template #message>
         尚未配置 NAS 迅雷地址，
@@ -89,8 +83,15 @@ watch(activeTab, () => {
     </a-tabs>
 
     <footer class="footer">
-      <a-button type="link" size="small" @click="handleOpenXunlei">打开迅雷页面</a-button>
-      <a-button type="link" size="small" @click="handleOpenSettings">设置</a-button>
+      <div class="brand">
+        <img src="/icons/48.png" alt="logo" class="logo" />
+        <span class="title">NAS 迅雷助手</span>
+      </div>
+      <div class="actions">
+        <a-button type="link" size="small" @click="handleOpenXunlei">打开迅雷页面</a-button>
+        <a-button type="link" size="small" @click="handleOpenSettings">设置</a-button>
+      </div>
+      <span class="version">v{{ version }}</span>
     </footer>
   </div>
 </template>
@@ -119,33 +120,6 @@ watch(activeTab, () => {
   .footer {
     gap: 10px;
   }
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  /* #app 被钉到视口高度（弹窗被浏览器限高）后，压缩只应发生在页签内的滚动区 */
-  flex-shrink: 0;
-}
-
-.logo {
-  width: 24px;
-  height: 24px;
-}
-
-.title {
-  font-size: 15px;
-  font-weight: 600;
-  color: rgba(0, 0, 0, 0.88);
-}
-
-.version {
-  margin-left: auto;
-  font-size: 11px;
-  color: rgba(0, 0, 0, 0.3);
-  font-variant-numeric: tabular-nums;
 }
 
 .notice {
@@ -211,13 +185,50 @@ watch(activeTab, () => {
   min-width: 0;
 }
 
+/* 三列 grid：左右两列等宽保证中间按钮始终居中，左侧品牌、右侧版本号 */
 .footer {
-  display: flex;
-  justify-content: center;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
   margin-top: auto;
   padding-top: 8px;
   border-top: 1px solid #f0f0f0;
   flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.logo {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+}
+
+.version {
+  text-align: right;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.3);
+  font-variant-numeric: tabular-nums;
 }
 </style>

@@ -52,8 +52,9 @@ const tasks = ref<TaskSummary[]>([]);
 const keyword = ref('');
 /** 状态筛选：仅「进行中」页签显示（已完成页签全是完成态，筛了无意义）；值保留，切回页签时恢复 */
 const statusFilter = ref<'' | XunleiPhase>('');
-/** 「进行中」页签的状态筛选选项，文案与列表状态标签一致 */
-const STATUS_FILTER_OPTIONS: { label: string; value: XunleiPhase }[] = [
+/** 「进行中」页签的状态筛选选项，「全部」即空串默认项，文案与列表状态标签一致 */
+const STATUS_FILTER_OPTIONS: { label: string; value: '' | XunleiPhase }[] = [
+  { label: '全部', value: '' },
   { label: '下载中', value: 'PHASE_TYPE_RUNNING' },
   { label: '等待中', value: 'PHASE_TYPE_PENDING' },
   { label: '已暂停', value: 'PHASE_TYPE_PAUSED' },
@@ -375,17 +376,15 @@ onBeforeUnmount(() => {
         </template>
       </a-input>
       <!-- 状态筛选只在「进行中」页签出现（已完成页签全是完成态）；
-           clear 时 antd 回传 undefined，归一回空串 -->
+           「全部」是显式默认项，不提供清空按钮 -->
       <a-select
         v-if="scope === 'ing'"
         class="status-filter"
         size="small"
         :value="statusFilter"
         :options="STATUS_FILTER_OPTIONS"
-        placeholder="全部状态"
-        allow-clear
         title="按状态筛选任务"
-        @change="(value: unknown) => (statusFilter = (value as '' | XunleiPhase) ?? '')"
+        @change="(value: unknown) => (statusFilter = value as '' | XunleiPhase)"
       />
     </div>
 
