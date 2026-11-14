@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteTasks,
-  downloadPathsToDirItems,
+  driveRootsToDirItems,
   filesToDirItems,
   flattenResourceFiles,
   invalidatePanAuth,
+  listAllFiles,
   listTasks,
   operateTask,
   taskStatusMessage,
@@ -280,56 +281,96 @@ describe('filesToDirItems（目录树映射）', () => {
   });
 });
 
-describe('downloadPathsToDirItems（下载根目录映射）', () => {
-  it('按 Id 与路径双重去重，路径去尾斜杠归一', () => {
-    const items = downloadPathsToDirItems([
+describe('driveRootsToDirItems（完整目录树根层映射）', () => {
+  // 2026-11-15 线上实测根层返回：downloads 带 category_id=DownloadPath/default=true，
+  // data 与 StudyMaterials01 是 DiskMountPath（全部磁盘目录）
+  it('默认下载目录标注并置顶，其余按名称排序，只保留目录', () => {
+    const items = driveRootsToDirItems([
       {
-        Id: 'd992',
-        ParentID: '',
-        FileName: 'av',
-        RealPath: '/vol1/1000/视频/av/',
-        Kind: 'DOWNLOAD',
+        kind: 'drive#folder',
+        id: 'root-data',
+        parent_id: '',
+        name: 'data',
+        params: { RealPath: '/data/', is_write: 'true', category_id: 'DiskMountPath' },
       },
       {
-        Id: '5431',
-        ParentID: '',
-        FileName: 'downloads',
-        RealPath: '/var/apps/xunlei/shares/downloads',
-        Kind: 'DOWNLOAD',
-      },
-      // 线上实测同一路径会重复登记：同 Id 同 RealPath，或同 RealPath 不同 Id
-      {
-        Id: 'd992',
-        ParentID: '',
-        FileName: 'av',
-        RealPath: '/vol1/1000/视频/av/',
-        Kind: 'DOWNLOAD',
+        kind: 'drive#folder',
+        id: 'root-dl',
+        parent_id: '',
+        name: 'downloads',
+        params: {
+          RealPath: '/downloads/',
+          is_write: 'true',
+          category_id: 'DownloadPath',
+          default: 'true',
+        },
       },
       {
-        Id: 'dup-path',
-        ParentID: '',
-        FileName: 'av 别名',
-        RealPath: '/vol1/1000/视频/av',
-        Kind: 'DOWNLOAD',
+        kind: 'drive#folder',
+        id: 'root-study',
+        parent_id: '',
+        name: 'StudyMaterials01',
+        params: { RealPath: '/downloads/StudyMaterials01/', is_write: 'true' },
       },
+      { kind: 'drive#file', id: 'f1', parent_id: '', name: 'movie.mp4' },
     ]);
-    expect(items.map((item) => item.id)).toEqual(['d992', '5431']);
+    expect(items.map((item) => item.id)).toEqual(['root-dl', 'root-data', 'root-study']);
     expect(items[0]).toEqual({
-      id: 'd992',
-      name: 'av',
-      path: '/vol1/1000/视频/av',
-      realPath: '/vol1/1000/视频/av',
+      id: 'root-dl',
+      name: 'downloads',
+      path: '/downloads',
+      realPath: '/downloads/',
       writable: true,
+      note: '默认下载目录',
     });
+    expect(items[1]).toMatchObject({ id: 'root-data', note: '' });
+    expect(items[2]).toMatchObject({ id: 'root-study', path: '/downloads/StudyMaterials01', note: '' });
   });
 
-  it('空列表或根路径条目被剔除', () => {
-    expect(downloadPathsToDirItems(undefined)).toEqual([]);
+  it('undefined 或缺 id/name 的条目被剔除，不抛错', () => {
+    expect(driveRootsToDirItems(undefined)).toEqual([]);
     expect(
-      downloadPathsToDirItems([
-        { Id: 'x', ParentID: '', FileName: '', RealPath: '/', Kind: 'DOWNLOAD' },
-        { Id: '', ParentID: '', FileName: 'y', RealPath: '/y', Kind: 'DOWNLOAD' },
+      driveRootsToDirItems([
+        { kind: 'drive#folder', id: '', parent_id: '', name: 'no-id' },
+        { kind: 'drive#folder', id: 'ok', parent_id: '', name: '' },
       ]),
     ).toEqual([]);
+  });
+});
+
+describe('listAllFiles（分页聚合）', () => {
+  const homepage = () => new Response(`<html>function uiauth(){return "${TOKEN}"}</html>`, { status: 200 });
+
+  it('跟随 next_page_token 翻页直到取空，page_token 逐页下传', async () => {
+    const calls = stubFetch([
+      homepage,
+      () =>
+        new Response(
+          JSON.stringify({ files: [{ kind: 'drive#folder', id: 'd1', name: 'a' }], next_page_token: '5' }),
+          { status: 200 },
+        ),
+      () =>
+        new Response(
+          JSON.stringify({ files: [{ kind: 'drive#folder', id: 'd2', name: 'b' }], next_page_token: '10' }),
+          { status: 200 },
+        ),
+      () => new Response(JSON.stringify({ files: [{ kind: 'drive#folder', id: 'd3', name: 'c' }] }), { status: 200 }),
+    ]);
+    const files = await listAllFiles('http://nas.local:5000', { space: 'dev#1', parentId: 'p1' });
+    expect(files.map((file) => file.id)).toEqual(['d1', 'd2', 'd3']);
+    const listUrls = calls.slice(1).map((call) => call.url);
+    expect(listUrls[0]).toContain('parent_id=p1');
+    expect(listUrls[0]).toContain('page_token=');
+    expect(listUrls[1]).toContain('page_token=5');
+    expect(listUrls[2]).toContain('page_token=10');
+    // 单页 limit 固定 500
+    expect(listUrls[0]).toContain('limit=500');
+  });
+
+  it('首页取空即返回空数组，多发一次请求都不该有', async () => {
+    const calls = stubFetch([homepage, () => new Response(JSON.stringify({ files: [] }), { status: 200 })]);
+    const files = await listAllFiles('http://nas.local:5000', { space: 'dev#1' });
+    expect(files).toEqual([]);
+    expect(calls).toHaveLength(2);
   });
 });

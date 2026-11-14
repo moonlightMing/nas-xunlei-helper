@@ -73,12 +73,12 @@ import {
 import {
   createTask,
   deleteTasks,
-  downloadPathsToDirItems,
+  driveRootsToDirItems,
   fetchDownloadPaths,
   filesToDirItems,
   flattenResourceFiles,
   getDeviceSpace,
-  listFiles,
+  listAllFiles,
   listTasks,
   operateTask,
   parseResources,
@@ -1872,8 +1872,10 @@ async function testConnection(
 
 /**
  * 接口直连读取目录树：全程在 Service Worker 内完成，不打开迅雷标签页。
- * 根层用 device/download_paths（与确认窗口的目录下拉同源），
+ * 根层用 drive/v1/files 的完整目录树（默认下载目录 + 全部磁盘挂载点，与迅雷面板同源；
+ * device/download_paths 只有「已登记下载位置」，未登记目录不显示，线上实测缺 /downloads/03），
  * 子层用 drive/v1/files 下钻；目录 Id 两处同一套（线上已确认）。
+ * 两层都跟随 next_page_token 翻页（listAllFiles），单页 limit 截断不再丢目录。
  * 任何失败都由调用方回退页面读取，这里只返回 null。
  */
 async function listDirViaApi(
@@ -1884,12 +1886,16 @@ async function listDirViaApi(
   try {
     const space = await getDeviceSpace(url);
     if (!parentId) {
-      const entries = await fetchDownloadPaths(url, space);
-      const items = downloadPathsToDirItems(entries);
-      return items; // 空列表也是真实结果（迅雷未登记下载目录），不触发回退
+      const files = await listAllFiles(url, {
+        space,
+        parentId: '',
+        with: ['withCategoryDiskMountPath', 'withCategoryDownloadPath'],
+      });
+      const items = driveRootsToDirItems(files);
+      return items; // 空列表也是真实结果（迅雷没暴露任何挂载点），不触发回退
     }
-    const result = await listFiles(url, { space, parentId, limit: 200 });
-    return filesToDirItems(result.files, parentPath ?? '');
+    const files = await listAllFiles(url, { space, parentId });
+    return filesToDirItems(files, parentPath ?? '');
   } catch (error) {
     console.warn('[background] 目录接口直连失败，回退页面读取:', error);
     return null;

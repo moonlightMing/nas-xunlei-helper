@@ -448,7 +448,7 @@ export interface ListFilesResult {
   next_page_token?: string;
 }
 
-/** 逐层列目录；with 传 withCategoryDiskMountPath/withCategoryDownloadPath 可拿到挂载与下载根标记 */
+/** 逐层列目录单页；with 传 withCategoryDiskMountPath/withCategoryDownloadPath 可拿到挂载与下载根标记 */
 export function listFiles(
   xunleiUrl: string,
   params: { space: string; parentId?: string; pageToken?: string; limit?: number; with?: string[] },
@@ -462,6 +462,36 @@ export function listFiles(
       with: params.with,
     },
   });
+}
+
+/** 列全目录的分页参数：线上 token 是数字偏移（实测 limit=5 依次 5/10/15…），服务端接受 limit≥1000 */
+const LIST_PAGE_LIMIT = 500;
+/** 防服务端异常时死循环的页数上限：20 页 × 500 条远超任何真实下载目录 */
+const LIST_MAX_PAGES = 20;
+
+/**
+ * 列全一个目录（跟随 next_page_token 翻页聚合）。
+ * 此前单页 limit=200 不跟页，子目录超过 200 项时后面的条目被静默丢弃。
+ */
+export async function listAllFiles(
+  xunleiUrl: string,
+  params: { space: string; parentId?: string; with?: string[] },
+): Promise<XunleiFile[]> {
+  const files: XunleiFile[] = [];
+  let pageToken = '';
+  for (let page = 0; page < LIST_MAX_PAGES; page++) {
+    const result = await listFiles(xunleiUrl, {
+      space: params.space,
+      parentId: params.parentId,
+      pageToken,
+      limit: LIST_PAGE_LIMIT,
+      with: params.with,
+    });
+    files.push(...(result.files ?? []));
+    pageToken = result.next_page_token ?? '';
+    if (!pageToken) return files;
+  }
+  return files;
 }
 
 function normalizeDirPath(value: string): string {
@@ -491,25 +521,29 @@ export function filesToDirItems(files: XunleiFile[] | undefined, parentPath: str
 }
 
 /**
- * 设备已登记的下载根目录（device/download_paths）映射为目录树根层。
- * 迅雷可能重复登记同一路径（线上实测 [av,旧,av]），按 Id 与路径双重去重。
+ * drive/v1/files 根层（需带 withCategoryDiskMountPath/withCategoryDownloadPath）
+ * 映射为目录树根：完整目录 = 默认下载目录（category_id=DownloadPath）+ 全部磁盘挂载点
+ * （DiskMountPath），与迅雷面板自己的目录选择同源。已登记下载位置只是其中的快捷子集
+ * （device/download_paths），未登记的目录（线上实测缺 /downloads/03）从这里下钻可达。
  */
-export function downloadPathsToDirItems(entries: DownloadPathEntry[] | undefined): DirItem[] {
+export function driveRootsToDirItems(files: XunleiFile[] | undefined): DirItem[] {
   const items: DirItem[] = [];
-  for (const entry of entries ?? []) {
-    const id = String(entry?.Id ?? '');
-    const rawPath = String(entry?.RealPath ?? entry?.FileName ?? '');
-    const path = normalizeDirPath(rawPath);
-    if (!id || path === '/') continue;
-    if (items.some((item) => item.id === id || item.path === path)) continue;
-    items.push({
-      id,
-      name: String(entry?.FileName ?? '') || path.split('/').filter(Boolean).pop() || path,
-      path,
-      realPath: path,
-      writable: true,
-    });
+  for (const file of files ?? []) {
+    if ((file.kind ?? '') !== 'drive#folder') continue;
+    const id = String(file.id ?? '');
+    const name = String(file.name ?? '');
+    if (!id || !name) continue;
+    const realPath = String(file.params?.RealPath ?? '').trim() || `/${name}`;
+    const writable = !(file.params?.is_write === false || file.params?.is_write === 'false');
+    const note = file.params?.category_id === 'DownloadPath' ? '默认下载目录' : '';
+    items.push({ id, name, path: normalizeDirPath(realPath), realPath, writable, note });
   }
+  // 默认下载目录置顶，其余按名称排序，保证重复打开顺序稳定
+  items.sort((a, b) => {
+    const ad = a.note ? 0 : 1;
+    const bd = b.note ? 0 : 1;
+    return ad !== bd ? ad - bd : a.name.localeCompare(b.name, 'zh-Hans-CN');
+  });
   return items;
 }
 
@@ -650,15 +684,14 @@ export async function resolveFolderIdByPath(
   path: string,
 ): Promise<{ id: string; matched: string[]; missing: string }> {
   const segments = path.split('/').filter(Boolean);
-  const roots = await listFiles(xunleiUrl, {
+  const roots = await listAllFiles(xunleiUrl, {
     space,
     parentId: '',
-    limit: 200,
     with: ['withCategoryDiskMountPath', 'withCategoryDownloadPath'],
   });
   const matched: string[] = [];
   // 服务端会整个省略空数组字段（ListFilesResult.files 同 ListTasksResult.tasks 的省略行为）
-  let level: XunleiFile[] = roots.files ?? [];
+  let level: XunleiFile[] = roots;
   let parentId = '';
 
   for (const [index, segment] of segments.entries()) {
@@ -669,8 +702,7 @@ export async function resolveFolderIdByPath(
     matched.push(segment);
     parentId = hit.id;
     if (index === segments.length - 1) return { id: hit.id, matched, missing: '' };
-    const next = await listFiles(xunleiUrl, { space, parentId: hit.id, limit: 200 });
-    level = next.files ?? [];
+    level = await listAllFiles(xunleiUrl, { space, parentId: hit.id });
   }
   return { id: parentId, matched, missing: '' };
 }

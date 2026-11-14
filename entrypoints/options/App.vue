@@ -296,9 +296,10 @@ const handleReset = () => {
 };
 
 function toDirNode(item: DirItem): DirNode {
+  const note = item.note ? `（${item.note}）` : '';
   return {
     key: item.id,
-    title: `${item.name || item.path}${item.writable ? '' : '（不可写）'}`,
+    title: `${item.name || item.path}${note}${item.writable ? '' : '（不可写）'}`,
     id: item.id,
     path: item.path,
     realPath: item.realPath,
@@ -601,7 +602,7 @@ function monitorText(item: SendHistoryEntry): string {
                   <span v-else class="extra">
                     第一个为默认位置；配置多个后发送时可在弹窗临时选用其它。路径是迅雷面板中显示的路径（如
                     /downloads/movies），不是 NAS 宿主机路径。目录需已在迅雷中存在，插件不会自动建目录；
-                    可选根目录即迅雷中登记的下载位置，新增根需先在迅雷里登记。
+                    「从迅雷选择」展示迅雷完整目录树（默认下载目录 + 全部磁盘挂载点）。
                   </span>
                 </template>
               </a-form-item>

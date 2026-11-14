@@ -114,7 +114,7 @@
 | `utils/clipboard.ts` | 扩展页面点击复制文本到剪贴板并提示（popup 任务名点击复制共用） |
 | `utils/xunleiTab.ts` | 迅雷标签页查找、打开/复用、聚焦、加载等待（5 秒轮询保活）；`activate: false` 时后台复用/新建，不聚焦窗口也不激活标签页 |
 | `utils/xunleiAutomation.ts` | 迅雷页面选择器、步骤注入、错误/登录识别、路径解析、目录列表、任务读取、BT 文件树只读/应用 |
-| `utils/xunleiApi.ts` | 接口模式客户端：`uiauth` 令牌提取与缓存、`drive/v1` 调用、解析/拍平/`sub_file_index` 编码、目录与任务读写、目录树条目映射（`filesToDirItems`/`downloadPathsToDirItems` 纯函数，供 `listDir` 接口直连用） |
+| `utils/xunleiApi.ts` | 接口模式客户端：`uiauth` 令牌提取与缓存、`drive/v1` 调用、解析/拍平/`sub_file_index` 编码、目录与任务读写、目录树条目映射（`filesToDirItems`/`driveRootsToDirItems` 纯函数与分页聚合 `listAllFiles`，供 `listDir` 接口直连用） |
 | `utils/confirm.ts` | 接口模式确认窗口：待确认任务 `storage.session` 读写、文件树还原、勾选→`sub_file_index` 的纯函数 |
 | `entrypoints/confirm/` | 自绘的确认下载窗口（Vue）：文件勾选/文件夹级三态勾选/仅选中此项/扩展名筛选、任务名编辑、下载目录、提交与取消 |
 | `utils/history.ts` | 发送记录、监控摘要回写、中断标记、清空与监听 |
@@ -144,7 +144,7 @@
 
 开启番号匹配时，`runSendFlow` 在 `wait-dialog` 后插入只读 `read-file-list`（拍平 BT 文件树）→ 后台用 `utils/avMatch.ts` 计算计划 → `apply-file-selection`（调用面板树组件 `setCheckedKeys`）应用勾选；立即模式最后点击「立即下载」（`skipPath=1`，避免重复改 Vuex 路径）。严格模式任一任务未匹配/文件树异常时不点击并返回 `paused`；回退模式保留未匹配任务原勾选继续。非 BT 直链跳过匹配。
 
-最后更新历史 → 发送通知 → 按需 `startMonitor()`。每步单独注入，元素等待超时 10 秒（`STEP_TIMEOUT_MS`），磁力解析结果等待放宽到 45 秒（`PARSE_WAIT_TIMEOUT_MS`，DHT 拉元数据远慢于普通步骤）。整条发送链路有互斥：内存锁 + `storage.session` 的 `nas_xunlei_send_lock`（SW 重启后按时间戳判断孤儿），总超时 5 分钟后释放锁并返回超时结果。诊断入口中测试连接/读弹窗文件树与发送共用该互斥；**读目录（`listDir`）优先接口直连**（`listDirViaApi`：根层 `device/download_paths`、子层 `drive/v1/files` 下钻，纯只读、不碰标签页、不占互斥），接口失败才回退页面注入链路，回退时**后台复用/打开迅雷标签页（`activate: false`，不激活不聚焦）**，此时才检查发送互斥——不要把目录树读取改回激活标签页，那是「从迅雷选择」反复跳页的根源（0.11.1 修）。
+最后更新历史 → 发送通知 → 按需 `startMonitor()`。每步单独注入，元素等待超时 10 秒（`STEP_TIMEOUT_MS`），磁力解析结果等待放宽到 45 秒（`PARSE_WAIT_TIMEOUT_MS`，DHT 拉元数据远慢于普通步骤）。整条发送链路有互斥：内存锁 + `storage.session` 的 `nas_xunlei_send_lock`（SW 重启后按时间戳判断孤儿），总超时 5 分钟后释放锁并返回超时结果。诊断入口中测试连接/读弹窗文件树与发送共用该互斥；**读目录（`listDir`）优先接口直连**（`listDirViaApi`：根层 `drive/v1/files` 空父级取完整目录树（默认下载目录 + 全部磁盘挂载点，`driveRootsToDirItems` 映射并置顶标注默认目录；`device/download_paths` 只是「已登记下载位置」子集，不作为树根，未登记目录线上实测会缺）、子层 `drive/v1/files` 下钻，两层都经 `listAllFiles` 跟随 `next_page_token` 翻页（单页 limit 500、页数上限 20 防死循环），纯只读、不碰标签页、不占互斥），接口失败才回退页面注入链路，回退时**后台复用/打开迅雷标签页（`activate: false`，不激活不聚焦）**，此时才检查发送互斥——不要把目录树读取改回激活标签页，那是「从迅雷选择」反复跳页的根源（0.11.1 修），也不要把树根改回 `device/download_paths`，那是目录树不全的根源（0.13.0 修）。确认窗口的目录下拉（`loadConfirmPaths`）仍以 `device/download_paths` 已登记位置为候选，发送目标必须在迅雷登记范围内，不要混同于目录树。
 
 ### 错误码与通知
 

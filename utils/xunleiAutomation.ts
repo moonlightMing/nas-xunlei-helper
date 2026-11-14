@@ -131,6 +131,8 @@ export interface DirItem {
   path: string;
   realPath?: string;
   writable: boolean;
+  /** 展示用备注（如根层的「默认下载目录」），拼接进目录树标题，不影响 path */
+  note?: string;
 }
 
 export interface TaskStateItem {
